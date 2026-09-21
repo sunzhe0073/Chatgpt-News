@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  models: read
 
 concurrency:
   group: daily-news-generation
@@ -28,6 +29,8 @@ jobs:
           python-version: "3.12"
       - name: Generate today's brief from English sources
         run: python3 scripts/generate_news.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Validate generated brief
         shell: bash
         run: |

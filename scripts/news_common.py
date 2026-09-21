@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 SECTIONS = (
@@ -38,4 +39,57 @@ def validate_html(path: Path, expected_date: str) -> list[str]:
         errors.append("brief contains duplicate event titles")
     if "ENGLISH SOURCES" not in text:
         errors.append("English-source marker is missing")
+    parser = BriefTextParser()
+    parser.feed(text)
+    if parser.titles and any(not chinese_dominant(value) for value in parser.titles):
+        errors.append("one or more news titles are not Chinese-dominant")
+    if parser.summaries and any(not chinese_dominant(value) for value in parser.summaries):
+        errors.append("one or more news summaries are not Chinese-dominant")
+    body = "".join(parser.titles + parser.summaries + parser.editorial)
+    cjk = len(re.findall(r"[\u3400-\u9fff]", body))
+    latin = len(re.findall(r"[A-Za-z]", body))
+    if not body or cjk < latin:
+        errors.append("brief editorial body is not primarily Chinese")
     return errors
+
+
+def chinese_dominant(value: str) -> bool:
+    """Allow product names such as OpenAI, but reject English prose."""
+    cjk = len(re.findall(r"[\u3400-\u9fff]", value))
+    latin_words = len(re.findall(r"[A-Za-z]+", value))
+    return cjk >= 2 and cjk >= latin_words
+
+
+class BriefTextParser(HTMLParser):
+    """Extract editorial text while deliberately excluding source names/URLs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.titles: list[str] = []
+        self.summaries: list[str] = []
+        self.editorial: list[str] = []
+        self._target: str | None = None
+        self._in_card = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = dict(attrs).get("class", "") or ""
+        if tag == "article" and "card" in classes.split():
+            self._in_card = True
+        if tag == "h3" and self._in_card:
+            self._target = "title"
+        elif tag == "p" and self._in_card:
+            self._target = "summary"
+        elif tag == "p" and any(name in classes.split() for name in ("lead",)):
+            self._target = "editorial"
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("h3", "p"):
+            self._target = None
+        if tag == "article":
+            self._in_card = False
+
+    def handle_data(self, data: str) -> None:
+        value = data.strip()
+        if not value or not self._target:
+            return
+        getattr(self, {"title": "titles", "summary": "summaries", "editorial": "editorial"}[self._target]).append(value)

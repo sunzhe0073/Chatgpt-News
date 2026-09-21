@@ -6,6 +6,15 @@ recent items from English BBC, Guardian, NPR and UN feeds plus seven broad
 Google News searches. A failure from one feed is recorded in the generated
 quality section and does not stop the other feeds.
 
+After collection and event-level deduplication, the workflow sends batches of
+English titles and feed descriptions to the official **GitHub Models** inference
+API using `openai/gpt-4.1-mini`. The model is instructed to produce a concise,
+natural Simplified Chinese title and a two-to-three-sentence Chinese summary
+based only on the supplied source text. Publisher names and original links are
+never translated or replaced. The generated file is rejected if conversion is
+incomplete or if any title/summary is not Chinese-dominant; an English-only
+brief can therefore never be committed as a successful run.
+
 The generator applies a 36-hour freshness window, rejects obviously low-value
 formats and non-English titles, categorises relevant stories, and merges highly
 similar headlines at event level. It does not impose a per-category quota or a
@@ -22,8 +31,12 @@ file.
 
 ## Repository settings
 
-No API key or repository secret is required. The workflow uses the standard
-`GITHUB_TOKEN` with `contents: write`. In **Settings → Actions → General →
+No user-created API key or repository secret is required. The workflow uses the
+ephemeral standard `GITHUB_TOKEN` with `contents: write` and `models: read`.
+GitHub Models has included, rate-limited usage; this implementation does not
+enable paid usage or attach a billing credential. Availability and rate limits
+remain subject to the repository/organisation's GitHub plan and Models policy.
+In **Settings → Actions → General →
 Workflow permissions**, allow read and write permissions if the organisation
 overrides workflow-level permissions. Any branch protection on `main` must also
 allow GitHub Actions to push, or the commit step must be adapted to use a pull
