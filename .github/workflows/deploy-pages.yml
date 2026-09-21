@@ -4,6 +4,11 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
+  # Commits made with GITHUB_TOKEN do not start another push workflow. This
+  # event deploys the commit produced by the daily generator instead.
+  workflow_run:
+    workflows: ["Generate daily news brief"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
