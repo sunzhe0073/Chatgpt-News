@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  models: read
 
 concurrency:
   group: daily-news-generation
@@ -27,10 +26,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Cache local translation model
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/argos-translate
+          key: argos-en-zh-v1
+      - name: Install local translation runtime and model
+        run: |
+          python3 -m pip install --requirement requirements-translation.txt
+          python3 scripts/setup_translation.py
       - name: Generate today's brief from English sources
         run: python3 scripts/generate_news.py
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
       - name: Validate generated brief
         shell: bash
         run: |

@@ -7,7 +7,6 @@ import argparse
 import email.utils
 import html
 import json
-import os
 import re
 import sys
 import urllib.parse
@@ -22,8 +21,6 @@ from news_common import SECTIONS, validate_html
 
 SGT = ZoneInfo("Asia/Singapore")
 UA = "Chatgpt-News daily briefing/1.0 (+https://github.com/sunzhe0073/Chatgpt-News)"
-GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
-TRANSLATION_MODEL = "openai/gpt-4.1-mini"
 QUERIES = {
     "ukraine": "Ukraine Russia war OR Kyiv OR Moscow",
     "middleeast": "Middle East Gaza Israel Iran Lebanon Syria Yemen",
@@ -163,54 +160,58 @@ def deduplicate(items: list[Item]) -> list[Item]:
     return groups
 
 
-def translate_batch(items: list[Item], token: str, fixture: Path | None = None) -> None:
-    """Turn English feed facts into natural Chinese, without changing sources."""
+def load_local_translator():
+    """Load the locally installed Argos English-to-Chinese model."""
+    try:
+        import argostranslate.translate
+        from opencc import OpenCC
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local translation dependencies are missing; run scripts/setup_translation.py"
+        ) from exc
+
+    installed = argostranslate.translate.get_installed_languages()
+    english = next((language for language in installed if language.code == "en"), None)
+    chinese = next((language for language in installed if language.code == "zh"), None)
+    if not english or not chinese:
+        raise RuntimeError(
+            "Argos English-to-Chinese model is missing; run scripts/setup_translation.py"
+        )
+    translation = english.get_translation(chinese)
+    simplified = OpenCC("t2s")
+    return lambda value: simplified.convert(translation.translate(value))
+
+
+def summary_source(item: Item) -> str:
+    """Use only publisher-supplied facts as input to the local translator."""
+    description = clean(item.summary)[:900]
+    if description:
+        return description
+    # Some RSS entries contain no description. Reusing the headline is less
+    # informative, but remains factual and never invents missing context.
+    return f"The report says: {item.title}. No additional summary was provided by the feed."
+
+
+def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> None:
+    """Translate publisher text locally; do not generate or add any facts."""
     fixture_data = json.loads(fixture.read_text(encoding="utf-8")) if fixture else None
-    for start in range(0, len(items), 20):
-        batch = items[start:start + 20]
+    local_translate = translator or (None if fixture_data is not None else load_local_translator())
+    for item in items:
         if fixture_data is not None:
-            translated = [fixture_data[item.title] for item in batch]
+            value = fixture_data.get(item.title)
+            if not value:
+                raise RuntimeError(f"Translation fixture has no entry for: {item.title}")
+            title, summary = value.get("title"), value.get("summary")
         else:
-            records = [{"id": start + i, "title": x.title, "description": x.summary[:900], "category": x.category} for i, x in enumerate(batch)]
-            prompt = (
-                "你是严谨的中文新闻编辑。输入来自英文新闻源。为每项写自然、简洁、事实导向的中文标题和中文摘要；"
-                "摘要用2至3句说明事件、背景或重要性，只能依据输入，不补造事实。专有名词可保留英文。"
-                "只返回JSON数组，每项严格为 {id,title,summary}，不得返回Markdown。\n输入："
-                + json.dumps(records, ensure_ascii=False)
-            )
-            payload = json.dumps({
-                "model": TRANSLATION_MODEL,
-                "temperature": 0.2,
-                "max_tokens": 12000,
-                "messages": [{"role": "system", "content": "所有新闻编辑文字必须以简体中文为主。"}, {"role": "user", "content": prompt}],
-            }).encode()
-            request = urllib.request.Request(GITHUB_MODELS_URL, data=payload, method="POST", headers={
-                "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": UA,
-            })
-            last_error: Exception | None = None
-            for attempt in range(3):
-                try:
-                    with urllib.request.urlopen(request, timeout=90) as response:
-                        result = json.load(response)
-                    content = result["choices"][0]["message"]["content"].strip()
-                    content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-                    translated = json.loads(content)
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    if attempt == 2:
-                        raise RuntimeError(f"Chinese conversion failed after 3 attempts: {exc}") from exc
-            if last_error and not translated:
-                raise RuntimeError(f"Chinese conversion failed: {last_error}")
-        if len(translated) != len(batch):
-            raise RuntimeError("Chinese conversion returned an incomplete batch")
-        by_id = {int(value.get("id", start + i)): value for i, value in enumerate(translated)}
-        for offset, item in enumerate(batch):
-            value = by_id.get(start + offset)
-            if not value or not value.get("title") or not value.get("summary"):
-                raise RuntimeError("Chinese conversion omitted a title or summary")
-            item.title = clean(str(value["title"]))
-            item.summary = clean(str(value["summary"]))
+            try:
+                title = local_translate(item.title)
+                summary = local_translate(summary_source(item))
+            except Exception as exc:
+                raise RuntimeError(f"Local Chinese translation failed: {exc}") from exc
+        if not title or not summary:
+            raise RuntimeError("Chinese conversion omitted a title or summary")
+        item.title = clean(str(title))
+        item.summary = clean(str(summary))
 
 
 STYLE = ":root{--ink:#202420;--muted:#687168;--paper:#f3f0e8;--card:#fffefa;--line:#d9d5ca;--accent:#963e35;--blue:#315f78;--green:#e6eee8;--amber:#f4ead3}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.68 system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif}.w{max-width:1100px;margin:auto;padding:28px 18px 64px}header{border-bottom:3px solid var(--ink);padding-bottom:18px}.eyebrow{font-size:12px;letter-spacing:.12em;color:var(--muted)}h1{font-size:46px;line-height:1.1;margin:9px 0 12px}.lead{font-size:18px}.stats,nav{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.pill,.tag{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--green)}nav{margin:18px 0}nav a{background:#fff;border:1px solid var(--line);border-radius:5px;padding:6px 10px;text-decoration:none}h2{margin-top:36px;border-bottom:1px solid #777;padding-bottom:7px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);padding:16px;border-radius:5px}.card h3{font-size:19px;line-height:1.38;margin:6px 0 8px}.card p{margin:7px 0}.src{font-size:13px;color:var(--muted);margin-top:10px}a{color:var(--blue)}.qa{background:var(--ink);color:#eef2ee;padding:20px;margin-top:40px;border-radius:5px}@media(max-width:760px){h1{font-size:34px}.grid{grid-template-columns:1fr}.w{padding:20px 14px 50px}}"
@@ -281,12 +282,8 @@ def main() -> int:
     if not items:
         print("No current items were collected; refusing to replace today's brief.", file=sys.stderr)
         return 1
-    token = os.environ.get("GITHUB_TOKEN", "")
-    if not args.translation_fixture and not token:
-        print("GITHUB_TOKEN is required for Chinese conversion; refusing to publish English content.", file=sys.stderr)
-        return 1
     try:
-        translate_batch(items, token, args.translation_fixture)
+        translate_batch(items, args.translation_fixture)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1

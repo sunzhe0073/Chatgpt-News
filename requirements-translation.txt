@@ -1,0 +1,3 @@
+# Translation runs on the Actions runner. It does not call a hosted inference API.
+argostranslate==1.9.6
+opencc-python-reimplemented==0.1.7

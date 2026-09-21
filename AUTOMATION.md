@@ -6,14 +6,16 @@ recent items from English BBC, Guardian, NPR and UN feeds plus seven broad
 Google News searches. A failure from one feed is recorded in the generated
 quality section and does not stop the other feeds.
 
-After collection and event-level deduplication, the workflow sends batches of
-English titles and feed descriptions to the official **GitHub Models** inference
-API using `openai/gpt-4.1-mini`. The model is instructed to produce a concise,
-natural Simplified Chinese title and a two-to-three-sentence Chinese summary
-based only on the supplied source text. Publisher names and original links are
-never translated or replaced. The generated file is rejected if conversion is
-incomplete or if any title/summary is not Chinese-dominant; an English-only
-brief can therefore never be committed as a successful run.
+After collection and event-level deduplication, the workflow translates each
+English title and publisher-supplied RSS description on the Actions runner with
+the open-source **Argos Translate** English-to-Chinese neural model. OpenCC then
+normalises the result to Simplified Chinese. This is translation, not generative
+summarisation: the summary is a translation of the source's description, so the
+pipeline does not add unsupported background or implications. If a feed omits
+its description, a clearly limited Chinese rendering of the headline and the
+absence of further feed detail is used instead. Publisher names and original
+links are never translated or replaced. The existing Chinese-dominance checks
+still reject incomplete or English output before it can be committed.
 
 The generator applies a 36-hour freshness window, rejects obviously low-value
 formats and non-English titles, categorises relevant stories, and merges highly
@@ -31,11 +33,16 @@ file.
 
 ## Repository settings
 
-No user-created API key or repository secret is required. The workflow uses the
-ephemeral standard `GITHUB_TOKEN` with `contents: write` and `models: read`.
-GitHub Models has included, rate-limited usage; this implementation does not
-enable paid usage or attach a billing credential. Availability and rate limits
-remain subject to the repository/organisation's GitHub plan and Models policy.
+No user-created API key, paid API, hosted inference service, or `models: read`
+permission is used. Argos Translate and OpenCC are free/open-source software;
+translation runs locally on the already-provisioned GitHub Actions runner and
+has no per-request quota or inference fee. On a cold cache the workflow obtains
+the Python packages from PyPI and the free language-model artifact from the
+Argos package index; `actions/cache` retains the model for later runs. Thus it
+does depend on those download hosts when installing a cold runner, but daily
+translation does not depend on the availability or policy of an external AI
+API. The standard `GITHUB_TOKEN` is used only by checkout and `git push` under
+the `contents: write` permission.
 In **Settings → Actions → General →
 Workflow permissions**, allow read and write permissions if the organisation
 overrides workflow-level permissions. Any branch protection on `main` must also
@@ -52,6 +59,8 @@ and manual Pages deployments continue to work.
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile scripts/*.py
+python3 -m pip install --requirement requirements-translation.txt
+python3 scripts/setup_translation.py
 python3 scripts/generate_news.py
 ```
 
