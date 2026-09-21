@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>English Test News</title>
+<item><title>Ukraine allies announce new air defence support</title><link>https://example.com/world/ukraine-support</link><description>European allies announced a new package after talks in Kyiv.</description><pubDate>Mon, 21 Sep 2026 00:30:00 GMT</pubDate><source>BBC News</source></item>
+<item><title>Ukraine allies announce new air defence support</title><link>https://example.org/duplicate</link><description>A duplicate report of the same event.</description><pubDate>Mon, 21 Sep 2026 00:35:00 GMT</pubDate><source>Example Wire</source></item>
+<item><title>New battery design could improve grid storage</title><link>https://example.com/technology/battery</link><description>Researchers published results for a new energy storage design.</description><pubDate>Mon, 21 Sep 2026 00:20:00 GMT</pubDate><source>NPR</source></item>
+</channel></rss>

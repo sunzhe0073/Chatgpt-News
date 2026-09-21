@@ -1,0 +1,52 @@
+name: Generate daily news brief
+
+on:
+  schedule:
+    # GitHub cron uses UTC. 01:05 UTC is 09:05 in Singapore (UTC+8).
+    - cron: "5 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  models: read
+
+concurrency:
+  group: daily-news-generation
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate today's brief from English sources
+        run: python3 scripts/generate_news.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Validate generated brief
+        shell: bash
+        run: |
+          day="$(TZ=Asia/Singapore date +%F)"
+          python3 scripts/validate_news.py "私人AI新闻简报-${day}.html" --date "$day"
+      - name: Commit and push a new brief
+        shell: bash
+        run: |
+          day="$(TZ=Asia/Singapore date +%F)"
+          file="私人AI新闻简报-${day}.html"
+          git add -- "$file"
+          if git diff --cached --quiet; then
+            echo "Today's brief is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Daily news brief ${day}"
+          git push origin HEAD:main
