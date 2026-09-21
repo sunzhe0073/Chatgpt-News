@@ -6,27 +6,34 @@ recent items from English BBC, Guardian, NPR and UN feeds plus seven broad
 Google News searches. A failure from one feed is recorded in the generated
 quality section and does not stop the other feeds.
 
-After collection and event-level deduplication, the workflow translates each
-English title and publisher-supplied RSS description on the Actions runner with
+After collection, normalisation, event-level deduplication, categorisation and
+per-topic selection, the workflow translates only the selected English titles
+and publisher-supplied RSS descriptions on the Actions runner with
 the open-source **Argos Translate** English-to-Chinese neural model. OpenCC then
 normalises the result to Simplified Chinese. This is translation, not generative
 summarisation: the summary is a translation of the source's description, so the
 pipeline does not add unsupported background or implications. If a feed omits
 its description, a clearly limited Chinese rendering of the headline and the
 absence of further feed detail is used instead. Publisher names and original
-links are never translated or replaced. The existing Chinese-dominance checks
-still reject incomplete or English output before it can be committed.
+links are never translated or replaced. A conservative postprocessor removes
+feed/publisher wrappers, duplicate sentences, stray quotation marks and
+machine-translation punctuation artifacts; it does not paraphrase or add facts.
+The existing Chinese-dominance checks still reject incomplete or English output
+before it can be committed.
 
 The generator applies a 36-hour freshness window, rejects obviously low-value
-formats and non-English titles, categorises relevant stories, and merges highly
-similar headlines at event level. It does not impose a per-category quota or a
-global maximum. When an event has multiple reports, links from reliable,
-generally free publishers are ordered first; up to three distinct sources are
-retained. The first ten reliability/recency-ranked events form “今日最重要”; all
-remaining events appear in the existing topical sections.
+formats and non-English titles, categorises relevant stories, and merges exact
+canonical URLs and highly similar headlines at event level. Each topic then
+selects at most ten events using freshness, source authority, topic relevance,
+major-event terms, description completeness, corroboration, publisher diversity
+and similarity to already selected events. When an event has multiple reports,
+links from reliable, generally free publishers are ordered first; up to three
+distinct sources are retained. “今日最重要” is a maximum-ten view drawn only
+from this already selected pool; it does not reintroduce or retranslate events.
 
-The workflow validates the Singapore date, external links, duplicate titles and
-all required HTML sections before committing only that day's
+The workflow validates the Singapore date, external links, duplicate titles,
+the hard ten-event maximum for every section, and all required HTML sections
+before committing only that day's
 `私人AI新闻简报-YYYY-MM-DD.html`. Historical briefs are never removed. The static
 `index.html` resolves the visitor's current Singapore date and loads that dated
 file.
