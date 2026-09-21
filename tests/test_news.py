@@ -9,9 +9,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from generate_news import Item, summary_source, translate_batch
+from news_common import chinese_dominant, validate_html
 
 
 class NewsGenerationTest(unittest.TestCase):
+    def test_chinese_with_english_names_and_acronyms_is_accepted(self):
+        self.assertTrue(chinese_dominant("Reuters报道，OpenAI与BBC讨论AI监管，NATO也回应了Trump的讲话。"))
+
+    def test_genuinely_english_copy_is_rejected(self):
+        self.assertFalse(chinese_dominant("Trump Announces New Tariffs After NATO Meeting"))
+        self.assertFalse(chinese_dominant("突发：Global Markets Rally After Trump Announces New Tariffs"))
+
     def test_local_translation_uses_only_feed_text(self):
         item = Item(
             "A factual English headline", "https://example.com/news", "Example",
@@ -37,6 +45,49 @@ class NewsGenerationTest(unittest.TestCase):
             summary_source(item),
             "The report says: A factual English headline. No additional summary was provided by the feed.",
         )
+
+    def test_one_bad_translation_is_skipped_without_failing_batch(self):
+        good = Item(
+            "Good headline", "https://example.com/good", "Reuters",
+            datetime(2026, 9, 21, tzinfo=timezone.utc), "Good description",
+        )
+        bad = Item(
+            "Bad headline", "https://example.com/bad", "BBC",
+            datetime(2026, 9, 21, tzinfo=timezone.utc), "Bad description",
+        )
+        translations = {
+            "Good headline": "OpenAI发布新的AI模型",
+            "Good description": "Reuters报道，新模型已经向开发者开放。",
+            "Bad headline": "Bad headline remains in English",
+            "Bad description": "This entire description remains untranslated English prose.",
+        }
+
+        items = [good, bad]
+        warnings = translate_batch(items, translator=translations.__getitem__)
+
+        self.assertEqual(items, [good])
+        self.assertTrue(chinese_dominant(good.title))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('Translation skipped "Bad headline"', warnings[0])
+        self.assertIn("CJK chars=0", warnings[0])
+
+    def test_validator_reports_failed_text_and_character_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "bad.html"
+            output.write_text(
+                '<title>私人 AI 新闻简报｜2026-09-21</title>ENGLISH SOURCES'
+                + ''.join(f'<section id="{name}"></section>' for name in (
+                    "must", "ukraine", "middleeast", "migration", "ai", "robots", "energy", "other"
+                ))
+                + '<article class="card"><h3>Entirely English Headline Here</h3>'
+                  '<p>This summary was not translated by the model.</p>'
+                  '<div class="src"><a href="https://reuters.com/story">Reuters</a></div></article>',
+                encoding="utf-8",
+            )
+            errors = validate_html(output, "2026-09-21")
+            joined = "\n".join(errors)
+            self.assertIn('news title is not Chinese-dominant: "Entirely English Headline Here"', joined)
+            self.assertRegex(joined, r"CJK chars=0, Latin chars=\d+")
 
     def test_workflow_has_no_github_models_dependency(self):
         workflow = (ROOT / ".github/workflows/generate-daily-news.yml").read_text(encoding="utf-8")

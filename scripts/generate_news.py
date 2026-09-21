@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from news_common import SECTIONS, validate_html
+from news_common import SECTIONS, chinese_failure, chinese_dominant, validate_html
 
 SGT = ZoneInfo("Asia/Singapore")
 UA = "Chatgpt-News daily briefing/1.0 (+https://github.com/sunzhe0073/Chatgpt-News)"
@@ -192,26 +192,45 @@ def summary_source(item: Item) -> str:
     return f"The report says: {item.title}. No additional summary was provided by the feed."
 
 
-def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> None:
-    """Translate publisher text locally; do not generate or add any facts."""
+def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> list[str]:
+    """Translate publisher text locally, dropping individual unsafe results."""
     fixture_data = json.loads(fixture.read_text(encoding="utf-8")) if fixture else None
     local_translate = translator or (None if fixture_data is not None else load_local_translator())
+    accepted: list[Item] = []
+    warnings: list[str] = []
     for item in items:
+        original_title = item.title
         if fixture_data is not None:
             value = fixture_data.get(item.title)
             if not value:
-                raise RuntimeError(f"Translation fixture has no entry for: {item.title}")
+                warnings.append(f'Translation skipped "{original_title}": fixture has no entry')
+                continue
             title, summary = value.get("title"), value.get("summary")
         else:
             try:
                 title = local_translate(item.title)
                 summary = local_translate(summary_source(item))
             except Exception as exc:
-                raise RuntimeError(f"Local Chinese translation failed: {exc}") from exc
+                warnings.append(f'Translation skipped "{original_title}": {type(exc).__name__}: {exc}')
+                continue
         if not title or not summary:
-            raise RuntimeError("Chinese conversion omitted a title or summary")
-        item.title = clean(str(title))
-        item.summary = clean(str(summary))
+            warnings.append(f'Translation skipped "{original_title}": omitted title or summary')
+            continue
+        translated_title = clean(str(title))
+        translated_summary = clean(str(summary))
+        failures = []
+        if not chinese_dominant(translated_title):
+            failures.append(chinese_failure("translated title", translated_title))
+        if not chinese_dominant(translated_summary):
+            failures.append(chinese_failure("translated summary", translated_summary))
+        if failures:
+            warnings.append(f'Translation skipped "{original_title}": ' + "; ".join(failures))
+            continue
+        item.title = translated_title
+        item.summary = translated_summary
+        accepted.append(item)
+    items[:] = accepted
+    return warnings
 
 
 STYLE = ":root{--ink:#202420;--muted:#687168;--paper:#f3f0e8;--card:#fffefa;--line:#d9d5ca;--accent:#963e35;--blue:#315f78;--green:#e6eee8;--amber:#f4ead3}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.68 system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif}.w{max-width:1100px;margin:auto;padding:28px 18px 64px}header{border-bottom:3px solid var(--ink);padding-bottom:18px}.eyebrow{font-size:12px;letter-spacing:.12em;color:var(--muted)}h1{font-size:46px;line-height:1.1;margin:9px 0 12px}.lead{font-size:18px}.stats,nav{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.pill,.tag{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--green)}nav{margin:18px 0}nav a{background:#fff;border:1px solid var(--line);border-radius:5px;padding:6px 10px;text-decoration:none}h2{margin-top:36px;border-bottom:1px solid #777;padding-bottom:7px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);padding:16px;border-radius:5px}.card h3{font-size:19px;line-height:1.38;margin:6px 0 8px}.card p{margin:7px 0}.src{font-size:13px;color:var(--muted);margin-top:10px}a{color:var(--blue)}.qa{background:var(--ink);color:#eef2ee;padding:20px;margin-top:40px;border-radius:5px}@media(max-width:760px){h1{font-size:34px}.grid{grid-template-columns:1fr}.w{padding:20px 14px 50px}}"
@@ -283,9 +302,14 @@ def main() -> int:
         print("No current items were collected; refusing to replace today's brief.", file=sys.stderr)
         return 1
     try:
-        translate_batch(items, args.translation_fixture)
+        warnings.extend(translate_batch(items, args.translation_fixture))
     except Exception as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    if not items:
+        print("No safely translated items remain; refusing to publish an English brief.", file=sys.stderr)
+        for warning in warnings:
+            print(warning, file=sys.stderr)
         return 1
     output = args.output or Path(f"私人AI新闻简报-{day}.html")
     render(items, now, output, warnings)
