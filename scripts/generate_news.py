@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from news_common import SECTIONS, chinese_failure, chinese_dominant, validate_html
+from news_common import MAX_SECTION_ITEMS, SECTIONS, chinese_failure, chinese_dominant, validate_html
 
 SGT = ZoneInfo("Asia/Singapore")
 UA = "Chatgpt-News daily briefing/1.0 (+https://github.com/sunzhe0073/Chatgpt-News)"
@@ -47,6 +47,11 @@ TOPIC_TERMS = {
     "energy": ("energy", "battery", "nuclear", "fusion", "solar", "wind power", "grid", "hydrogen", "geothermal"),
 }
 LOW_QUALITY = ("opinion", "horoscope", "quiz", "podcast", "live updates", "sponsored")
+MAJOR_TERMS = (
+    "breaking", "war", "attack", "strike", "invasion", "ceasefire", "sanction",
+    "election", "president", "prime minister", "government", "court", "dead", "killed",
+    "crisis", "emergency", "billion", "trillion", "launch", "ban", "agreement", "deal",
+)
 
 
 @dataclass
@@ -131,9 +136,66 @@ def category_for(item: Item, hinted: str) -> str:
 
 def source_score(source: str, url: str) -> int:
     text = f"{source} {url}".casefold()
-    score = 2 if any(x in text for x in ("bbc", "ap news", "guardian", "npr", "un news", ".gov", ".int")) else 0
-    score += 1 if "reuters" in text else 0
+    score = 3 if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", ".gov", ".int")) else 0
     return score
+
+
+def publisher_key(item: Item) -> str:
+    """Return a stable publisher identity for diversity scoring."""
+    source = re.sub(r"\s+(world|technology|news)$", "", item.source.casefold()).strip()
+    host = urllib.parse.urlsplit(item.url).hostname or ""
+    return source or host.removeprefix("www.")
+
+
+def title_similarity(left: Item, right: Item) -> float:
+    a, b = canonical_words(left.title), canonical_words(right.title)
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def ranking_score(item: Item, category: str, newest: datetime) -> float:
+    """Score freshness, authority, topic fit and major-event signals deterministically."""
+    age_hours = max(0.0, (newest - item.published).total_seconds() / 3600)
+    freshness = max(0.0, 36.0 - age_hours) / 6.0
+    text = f" {item.title} {item.summary} ".casefold()
+    relevance = sum(term in text for term in TOPIC_TERMS.get(category, ()))
+    major = sum(bool(re.search(rf"\b{re.escape(term)}\b", text)) for term in MAJOR_TERMS)
+    completeness = min(len(clean(item.summary)), 400) / 200
+    corroboration = min(len(item.sources), 3) - 1
+    return freshness + source_score(item.source, item.url) * 2.0 + relevance * 1.5 + major * 1.25 + completeness + corroboration
+
+
+def select_section(items: list[Item], category: str, limit: int = MAX_SECTION_ITEMS) -> list[Item]:
+    """Select a diverse, high-quality section using a deterministic MMR-like rank."""
+    if not items or limit <= 0:
+        return []
+    newest = max(item.published for item in items)
+    remaining = list(items)
+    selected: list[Item] = []
+    publisher_counts: dict[str, int] = {}
+    while remaining and len(selected) < limit:
+        def score(item: Item) -> tuple[float, datetime, str, str]:
+            duplicate_penalty = max((title_similarity(item, chosen) for chosen in selected), default=0.0) * 8
+            publisher_penalty = publisher_counts.get(publisher_key(item), 0) * 2.5
+            value = ranking_score(item, category, newest) - duplicate_penalty - publisher_penalty
+            return (value, item.published, item.title.casefold(), item.url)
+
+        winner = max(remaining, key=score)
+        selected.append(winner)
+        publisher_counts[publisher_key(winner)] = publisher_counts.get(publisher_key(winner), 0) + 1
+        # A looser second event check catches alternate headlines missed by the
+        # primary merge, preventing one story from consuming several slots.
+        remaining = [item for item in remaining if item is not winner and title_similarity(item, winner) < 0.58]
+    return selected
+
+
+def select_for_translation(items: list[Item]) -> list[Item]:
+    """Select at most ten events per topic before invoking Argos."""
+    selected: list[Item] = []
+    for category, _ in SECTIONS:
+        if category == "must":
+            continue
+        selected.extend(select_section([item for item in items if item.category == category], category))
+    return selected
 
 
 def deduplicate(items: list[Item]) -> list[Item]:
@@ -144,7 +206,9 @@ def deduplicate(items: list[Item]) -> list[Item]:
         for existing in groups:
             other = canonical_words(existing.title)
             similarity = len(words & other) / max(1, min(len(words), len(other)))
-            if similarity >= 0.72:
+            item_url = urllib.parse.urlsplit(item.url)._replace(query="", fragment="").geturl().rstrip("/")
+            existing_url = urllib.parse.urlsplit(existing.url)._replace(query="", fragment="").geturl().rstrip("/")
+            if item_url == existing_url or similarity >= 0.72:
                 match = existing
                 break
         if match:
@@ -192,6 +256,45 @@ def summary_source(item: Item) -> str:
     return f"The report says: {item.title}. No additional summary was provided by the feed."
 
 
+def postprocess_chinese(value: str, *, title: bool = False) -> str:
+    """Conservatively clean Argos output without adding or rewriting facts."""
+    value = clean(value)
+    # Feed wrappers and Google News headlines often append the publisher even
+    # though it is rendered separately from Item.source below.
+    value = re.sub(
+        r"\s*(?:[-–—|｜]\s*)?(?:来源[：:]\s*)?(Reuters|BBC(?: News)?|AP(?: News)?|The Guardian|Guardian|NPR|UN News)\s*$",
+        "", value, flags=re.IGNORECASE,
+    ).strip()
+    value = re.sub(
+        r"^(Reuters|BBC(?: News)?|AP(?: News)?|The Guardian|Guardian|NPR|UN News)\s*(?:报道|消息)?\s*[：:,，\-–—]+\s*",
+        "", value, flags=re.IGNORECASE,
+    )
+    value = re.sub(r"^[\s\"'“”‘’]+|[\s\"'“”‘’\-–—|｜]+$", "", value)
+    value = re.sub(r"([。！？!?])[\"”’]\s*[\"“‘]", r"\1", value)
+    value = re.sub(r"([，。！？；：、])\1+", r"\1", value)
+    value = re.sub(r"\s+([，。！？；：、])", r"\1", value)
+    value = re.sub(r"([（【])\s+|\s+([）】])", lambda m: m.group(1) or m.group(2), value)
+    # Convert punctuation only at Chinese boundaries, leaving URLs, numbers,
+    # acronyms and product names untouched.
+    value = re.sub(r"(?<=[\u3400-\u9fff])\s*,\s*(?=[\u3400-\u9fffA-Za-z])", "，", value)
+    value = re.sub(r"(?<=[\u3400-\u9fff])\s*;\s*(?=[\u3400-\u9fffA-Za-z])", "；", value)
+    value = re.sub(r"(?<=[\u3400-\u9fff])\s*:\s*(?=[\u3400-\u9fff])", "：", value)
+    value = re.sub(r"(?<=[\u3400-\u9fff])\.(?=\s|$)", "。", value)
+    # Remove only exact repeated sentences/fragments; do not paraphrase them.
+    parts = re.split(r"(?<=[。！？!?])\s*", value)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for part in parts:
+        key = re.sub(r"[\s。！？!?\"'“”‘’]+", "", part).casefold()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(part.strip(" \"'“”‘’"))
+    value = "".join(unique).strip()
+    if title:
+        value = re.sub(r"[。；;]+$", "", value).strip()
+    return value
+
+
 def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> list[str]:
     """Translate publisher text locally, dropping individual unsafe results."""
     fixture_data = json.loads(fixture.read_text(encoding="utf-8")) if fixture else None
@@ -216,8 +319,8 @@ def translate_batch(items: list[Item], fixture: Path | None = None, translator=N
         if not title or not summary:
             warnings.append(f'Translation skipped "{original_title}": omitted title or summary')
             continue
-        translated_title = clean(str(title))
-        translated_summary = clean(str(summary))
+        translated_title = postprocess_chinese(str(title), title=True)
+        translated_summary = postprocess_chinese(str(summary))
         failures = []
         if not chinese_dominant(translated_title):
             failures.append(chinese_failure("translated title", translated_title))
@@ -239,8 +342,15 @@ STYLE = ":root{--ink:#202420;--muted:#687168;--paper:#f3f0e8;--card:#fffefa;--li
 def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) -> None:
     day = now.astimezone(SGT).date().isoformat()
     sections: dict[str, list[Item]] = {key: [] for key, _ in SECTIONS}
-    ranked = sorted(items, key=lambda x: (source_score(x.source, x.url), x.published), reverse=True)
-    sections["must"] = ranked[: min(10, len(ranked))]
+    newest = max(item.published for item in items)
+    ranked = sorted(
+        items,
+        key=lambda x: (ranking_score(x, x.category, newest), x.published, x.title.casefold(), x.url),
+        reverse=True,
+    )
+    # The important list is a view over the already topic-selected pool. It
+    # never reintroduces a discarded candidate or triggers extra translation.
+    sections["must"] = select_section(ranked, "must", MAX_SECTION_ITEMS)
     important_ids = {id(x) for x in sections["must"]}
     for item in items:
         if id(item) not in important_ids:
@@ -297,10 +407,13 @@ def main() -> int:
                     collected.append(item)
         except Exception as exc:  # one unavailable publisher must not stop the run
             warnings.append(f"{name}: {type(exc).__name__}")
-    items = deduplicate(collected)
-    if not items:
+    candidates = deduplicate(collected)
+    if not candidates:
         print("No current items were collected; refusing to replace today's brief.", file=sys.stderr)
         return 1
+    # Keep collection broad, but rank and cap each topic before the expensive
+    # local Argos pass. A failed translation removes only that selected item.
+    items = select_for_translation(candidates)
     try:
         warnings.extend(translate_batch(items, args.translation_fixture))
     except Exception as exc:

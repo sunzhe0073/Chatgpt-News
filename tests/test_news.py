@@ -8,11 +8,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from generate_news import Item, summary_source, translate_batch
+from generate_news import (
+    Item, deduplicate, postprocess_chinese, select_for_translation,
+    select_section, summary_source, translate_batch,
+)
 from news_common import chinese_dominant, validate_html
 
 
 class NewsGenerationTest(unittest.TestCase):
+    def make_item(self, number, source="Example", category="ai", title=None):
+        return Item(
+            title or f"Company{number} unveils Codename{number} semiconductor project in Region{number}",
+            f"https://example.com/{number}", source,
+            datetime(2026, 9, 21, number % 20, tzinfo=timezone.utc),
+            f"Distinct report {number} describes an artificial intelligence launch and agreement.",
+            category,
+        )
+
     def test_chinese_with_english_names_and_acronyms_is_accepted(self):
         self.assertTrue(chinese_dominant("Reuters报道，OpenAI与BBC讨论AI监管，NATO也回应了Trump的讲话。"))
 
@@ -70,6 +82,77 @@ class NewsGenerationTest(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn('Translation skipped "Bad headline"', warnings[0])
         self.assertIn("CJK chars=0", warnings[0])
+
+    def test_each_topic_accepts_zero_through_ten_and_caps_large_pool(self):
+        self.assertEqual(select_section([], "ai"), [])
+        ten = [self.make_item(i) for i in range(10)]
+        self.assertEqual(len(select_section(ten, "ai")), 10)
+        large = [self.make_item(i) for i in range(50)]
+        selected = select_for_translation(large)
+        self.assertLessEqual(len(selected), 10)
+
+    def test_similar_events_do_not_consume_multiple_slots(self):
+        duplicates = [
+            self.make_item(i, title=f"Ukraine allies announce air defence support package {word}")
+            for i, word in enumerate(("today", "again", "now", "latest"))
+        ]
+        merged = deduplicate(duplicates)
+        self.assertEqual(len(merged), 1)
+        selected = select_section(duplicates, "ukraine")
+        self.assertEqual(len(selected), 1)
+
+    def test_selection_rewards_source_diversity(self):
+        pool = [self.make_item(i, source="Reuters") for i in range(12)]
+        pool += [self.make_item(20 + i, source=f"Local {i}") for i in range(4)]
+        chosen = select_section(pool, "ai")
+        self.assertEqual(len(chosen), 10)
+        self.assertLess(sum(item.source == "Reuters" for item in chosen), 10)
+
+    def test_selection_occurs_before_translation(self):
+        items = [self.make_item(i) for i in range(30)]
+        selected = select_for_translation(items)
+        calls = []
+
+        def translate(value):
+            calls.append(value)
+            return "OpenAI发布AI模型" if "unveils" in value else "这是一项人工智能发布协议。"
+
+        translate_batch(selected, translator=translate)
+        self.assertEqual(len(selected), 10)
+        self.assertEqual(len(calls), 20)
+
+    def test_chinese_postprocessing_is_conservative(self):
+        raw = '“OpenAI发布AI模型, 价格为100美元。” “OpenAI发布AI模型, 价格为100美元。” - Reuters'
+        cleaned = postprocess_chinese(raw)
+        self.assertEqual(cleaned.count("100"), 1)
+        self.assertEqual(cleaned.count("OpenAI发布AI模型"), 1)
+        self.assertNotIn("Reuters", cleaned)
+        item = self.make_item(1, source="Reuters")
+        original_url, original_source = item.url, item.source
+        postprocess_chinese(raw)
+        self.assertEqual((item.url, item.source), (original_url, original_source))
+        factual = "BBC报道：OpenAI在2026年发布更新，详情见https://example.com/a?x=1。"
+        factual_cleaned = postprocess_chinese(factual)
+        self.assertIn("2026", factual_cleaned)
+        self.assertIn("https://example.com/a?x=1", factual_cleaned)
+
+    def test_validator_rejects_eleventh_item_in_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "too-many.html"
+            cards = ''.join(
+                f'<article class="card"><h3>中文标题{i}</h3><p>这是中文摘要。</p>'
+                f'<div class="src"><a href="https://example.com/{i}">Reuters</a></div></article>'
+                for i in range(11)
+            )
+            output.write_text(
+                '<title>私人 AI 新闻简报｜2026-09-21</title>ENGLISH SOURCES'
+                + ''.join(
+                    f'<section id="{name}">{cards if name == "ai" else ""}</section>'
+                    for name in ("must", "ukraine", "middleeast", "migration", "ai", "robots", "energy", "other")
+                ), encoding="utf-8",
+            )
+            errors = validate_html(output, "2026-09-21")
+            self.assertIn("section #ai contains 11 events; maximum is 10", errors)
 
     def test_validator_reports_failed_text_and_character_counts(self):
         with tempfile.TemporaryDirectory() as directory:

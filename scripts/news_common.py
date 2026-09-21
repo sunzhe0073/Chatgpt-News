@@ -17,6 +17,7 @@ SECTIONS = (
     ("energy", "能源科技、电池与先进核能"),
     ("other", "其他重大国际与科技新闻"),
 )
+MAX_SECTION_ITEMS = 10
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,9 @@ def validate_html(path: Path, expected_date: str) -> list[str]:
         errors.append("English-source marker is missing")
     parser = BriefTextParser()
     parser.feed(text)
+    for section_id, count in parser.section_counts.items():
+        if count > MAX_SECTION_ITEMS:
+            errors.append(f"section #{section_id} contains {count} events; maximum is {MAX_SECTION_ITEMS}")
     errors.extend(chinese_failure("news title", value) for value in parser.titles if not chinese_dominant(value))
     errors.extend(chinese_failure("news summary", value) for value in parser.summaries if not chinese_dominant(value))
     body = "".join(parser.titles + parser.summaries + parser.editorial)
@@ -141,11 +145,17 @@ class BriefTextParser(HTMLParser):
         self._target: str | None = None
         self._buffer: list[str] = []
         self._in_card = False
+        self._section: str | None = None
+        self.section_counts: dict[str, int] = {}
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         classes = dict(attrs).get("class", "") or ""
+        if tag == "section":
+            self._section = dict(attrs).get("id")
         if tag == "article" and "card" in classes.split():
             self._in_card = True
+            if self._section:
+                self.section_counts[self._section] = self.section_counts.get(self._section, 0) + 1
         if tag == "h3" and self._in_card:
             self._target = "title"
             self._buffer = []
@@ -166,6 +176,8 @@ class BriefTextParser(HTMLParser):
             self._buffer = []
         if tag == "article":
             self._in_card = False
+        elif tag == "section":
+            self._section = None
 
     def handle_data(self, data: str) -> None:
         if self._target:
