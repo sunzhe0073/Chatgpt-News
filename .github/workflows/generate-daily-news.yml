@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: daily-news-generation
@@ -22,20 +23,20 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/256977843894/locations/global/workloadIdentityPools/chatgpt-news-github/providers/github-actions
+          service_account: chatgpt-news-translation@project-d7893afe-ec91-47bb-86d.iam.gserviceaccount.com
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Cache local translation model
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/argos-translate
-          key: argos-en-zh-v1
-      - name: Install local translation runtime and model
-        run: |
-          python3 -m pip install --requirement requirements-translation.txt
-          python3 scripts/setup_translation.py
+      - name: Install translation runtime
+        run: python3 -m pip install --requirement requirements-translation.txt
       - name: Generate today's brief from English sources
+        env:
+          GOOGLE_CLOUD_PROJECT: project-d7893afe-ec91-47bb-86d
         run: python3 scripts/generate_news.py
       - name: Validate generated brief
         shell: bash
