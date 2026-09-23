@@ -189,7 +189,7 @@ def select_section(items: list[Item], category: str, limit: int = MAX_SECTION_IT
 
 
 def select_for_translation(items: list[Item]) -> list[Item]:
-    """Select at most ten events per topic before invoking Argos."""
+    """Select at most ten events per topic before invoking Google Cloud Translation."""
     selected: list[Item] = []
     for category, _ in SECTIONS:
         if category == "must":
@@ -225,26 +225,36 @@ def deduplicate(items: list[Item]) -> list[Item]:
 
 
 def load_local_translator():
-    """Load the locally installed Argos English-to-Chinese model."""
+    """Create a Google Cloud Translation English-to-Chinese translator."""
     try:
-        import argostranslate.translate
+        import os
+        from google.cloud import translate_v3 as translate
         from opencc import OpenCC
     except ImportError as exc:
-        raise RuntimeError(
-            "Local translation dependencies are missing; run scripts/setup_translation.py"
-        ) from exc
+        raise RuntimeError("Google Cloud translation dependencies are missing") from exc
 
-    installed = argostranslate.translate.get_installed_languages()
-    english = next((language for language in installed if language.code == "en"), None)
-    chinese = next((language for language in installed if language.code == "zh"), None)
-    if not english or not chinese:
-        raise RuntimeError(
-            "Argos English-to-Chinese model is missing; run scripts/setup_translation.py"
-        )
-    translation = english.get_translation(chinese)
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project_id:
+        raise RuntimeError("GOOGLE_CLOUD_PROJECT is not set")
+    client = translate.TranslationServiceClient()
+    parent = f"projects/{project_id}/locations/global"
     simplified = OpenCC("t2s")
-    return lambda value: simplified.convert(translation.translate(value))
 
+    def translate_text(value: str) -> str:
+        response = client.translate_text(
+            request={
+                "parent": parent,
+                "contents": [value],
+                "mime_type": "text/plain",
+                "source_language_code": "en",
+                "target_language_code": "zh-CN",
+            }
+        )
+        if not response.translations:
+            raise RuntimeError("Google Cloud Translation returned no translation")
+        return simplified.convert(response.translations[0].translated_text)
+
+    return translate_text
 
 def summary_source(item: Item) -> str:
     """Use only publisher-supplied facts as input to the local translator."""
@@ -257,7 +267,7 @@ def summary_source(item: Item) -> str:
 
 
 def postprocess_chinese(value: str, *, title: bool = False) -> str:
-    """Conservatively clean Argos output without adding or rewriting facts."""
+    """Conservatively clean Google Cloud Translation output without adding or rewriting facts."""
     value = clean(value)
     # Feed wrappers and Google News headlines often append the publisher even
     # though it is rendered separately from Item.source below.
@@ -412,7 +422,7 @@ def main() -> int:
         print("No current items were collected; refusing to replace today's brief.", file=sys.stderr)
         return 1
     # Keep collection broad, but rank and cap each topic before the expensive
-    # local Argos pass. A failed translation removes only that selected item.
+    # local Google Cloud Translation pass. A failed translation removes only that selected item.
     items = select_for_translation(candidates)
     try:
         warnings.extend(translate_batch(items, args.translation_fixture))
