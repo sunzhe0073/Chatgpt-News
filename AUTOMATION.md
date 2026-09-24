@@ -1,6 +1,6 @@
 # Daily news automation
 
-`Generate daily news brief` is scheduled at **01:05 UTC (09:05 Singapore time)** every day and can also be started with **Run workflow**. Because GitHub cron jobs can be delayed, a second recovery schedule runs at **02:05 UTC (10:05 Singapore time)**. The recovery run exits after checkout when that Singapore-date brief already exists, so a successful primary run is not regenerated.
+`Generate daily news brief` is scheduled once per day at **01:05 UTC (09:05 Singapore time)** and can also be started with **Run workflow**. GitHub cron jobs can be delayed while runners are busy; 09:05 is the scheduled time rather than a guaranteed start-time SLA.
 
 The job collects recent items from English BBC, Guardian, NPR and UN feeds plus
 seven broad English Google News searches. A failure from one feed is recorded
