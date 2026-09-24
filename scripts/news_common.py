@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import html
 import re
+import urllib.parse
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -18,6 +20,35 @@ SECTIONS = (
     ("other", "其他重大国际与科技新闻"),
 )
 MAX_SECTION_ITEMS = 10
+
+TRACKING_QUERY_KEYS = {
+    "at_campaign", "at_medium", "fbclid", "gclid", "mc_cid", "mc_eid",
+    "oc", "ref_src", "ref_url", "s_cid",
+}
+
+
+def canonical_source_url(value: str) -> str:
+    """Normalise only cosmetic URL differences while preserving article identity."""
+    parsed = urllib.parse.urlsplit(html.unescape(value).strip())
+    host = (parsed.hostname or "").casefold()
+    if parsed.port and not (
+        parsed.scheme.casefold() == "http" and parsed.port == 80
+        or parsed.scheme.casefold() == "https" and parsed.port == 443
+    ):
+        host = f"{host}:{parsed.port}"
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = sorted(
+        (key, item)
+        for key, item in query
+        if not key.casefold().startswith("utm_") and key.casefold() not in TRACKING_QUERY_KEYS
+    )
+    return urllib.parse.urlunsplit((
+        parsed.scheme.casefold(),
+        host,
+        parsed.path.rstrip("/") or "/",
+        urllib.parse.urlencode(query, doseq=True),
+        "",
+    ))
 
 
 @dataclass(frozen=True)
@@ -115,7 +146,10 @@ def validate_html(path: Path, expected_date: str) -> list[str]:
         errors.append("brief contains no external news links")
     if any(not link.startswith(("http://", "https://")) for link in links):
         errors.append("brief contains an invalid external link")
-    duplicate_links = sorted({link for link in links if links.count(link) > 1})
+    links_by_identity: dict[str, list[str]] = {}
+    for link in links:
+        links_by_identity.setdefault(canonical_source_url(link), []).append(link)
+    duplicate_links = sorted(urls[0] for urls in links_by_identity.values() if len(urls) > 1)
     if duplicate_links:
         errors.append(
             "brief reuses external source URLs across event cards: "

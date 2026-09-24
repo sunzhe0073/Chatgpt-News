@@ -17,9 +17,13 @@ stories, and merges exact canonical URLs and highly similar headlines at event
 level. Each topic then selects at most ten events using freshness, source
 authority, topic relevance, major-event terms, description completeness,
 corroboration, publisher diversity and similarity to already selected events.
-Up to three source links are retained for a merged event. “今日最重要” is a
-maximum-ten view drawn from this already selected pool; it does not reintroduce
-or retranslate discarded events.
+Tracking-only URL parameters are ignored for article identity, while meaningful
+query parameters are preserved. Topic selection shares one global source-URL
+set, so a lower-priority topic skips a URL already selected by a higher-priority
+topic and continues down its ranked candidates to backfill the slot. Up to three
+source links are retained for a merged event. “今日最重要” is a maximum-ten view
+drawn from this already selected pool; those items are removed from their topic
+sections so every event card and source URL is rendered only once.
 
 Only selected English titles and publisher-supplied RSS descriptions are sent
 to **Google Cloud Translation v3**. The workflow authenticates with GitHub OIDC
