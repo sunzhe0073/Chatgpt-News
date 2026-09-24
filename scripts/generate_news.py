@@ -495,7 +495,7 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
     sections["must"] = select_section(important_candidates, "must", IMPORTANT_LIMIT)
     important_ids = {id(x) for x in sections["must"]}
     for item in items:
-        if id(item) not in important_ids:
+        if id(item) not in important_ids and len(sections[item.category]) < MAX_SECTION_ITEMS:
             sections[item.category].append(item)
     rendered_count = sum(len(section_items) for section_items in sections.values())
     nav = "".join(f'<a href="#{key}">{html.escape(label)}</a>' for key, label in SECTIONS)
