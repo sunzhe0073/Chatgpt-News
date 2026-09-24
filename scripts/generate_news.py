@@ -55,6 +55,19 @@ LOW_QUALITY = (
     "industry report", "research report", "projected to reach", "cagr",
 )
 BLOCKED_PUBLISHERS = ("openpr.com", "indexbox", "konsulteer.com", "inkorr.com")
+LOW_VALUE_SYNDICATION = (
+    "aol.com", "yahoo finance", "newsmax", "streamerfeed", "khaama press",
+)
+INVESTMENT_BAIT = (
+    "growth stock", "this stock", "buy this stock", "stock to buy",
+    "unbreakable moat", "supercycle", "could soar", "millionaire-maker",
+)
+GLOBAL_SIGNIFICANCE_TERMS = (
+    "war", "ceasefire", "sanction", "invasion", "military", "nuclear",
+    "united nations", "security council", "international", "treaty",
+    "summit", "diplomatic", "earthquake", "tsunami", "hurricane",
+    "famine", "election", "coup", "emergency",
+)
 IMPORTANT_LIMIT = 7
 PROPER_NOUNS = (
     "OpenAI", "Anthropic", "ChatGPT", "Gemini", "NVIDIA", "Microsoft",
@@ -150,8 +163,26 @@ def category_for(item: Item, hinted: str) -> str:
 
 def low_quality_item(item: Item) -> bool:
     text = f"{item.title} {item.summary} {item.source} {item.url}".casefold()
-    return any(term in text for term in LOW_QUALITY) or any(
-        publisher in text for publisher in BLOCKED_PUBLISHERS
+    if any(term in text for term in LOW_QUALITY):
+        return True
+    if any(publisher in text for publisher in BLOCKED_PUBLISHERS):
+        return True
+    if any(term in text for term in INVESTMENT_BAIT):
+        return True
+    return False
+
+
+def weak_syndication_item(item: Item) -> bool:
+    text = f"{item.source} {item.url}".casefold()
+    return any(publisher in text for publisher in LOW_VALUE_SYNDICATION)
+
+
+def globally_significant(item: Item) -> bool:
+    text = f" {item.title} {item.summary} ".casefold()
+    if any(re.search(rf"\b{re.escape(term)}\b", text) for term in GLOBAL_SIGNIFICANCE_TERMS):
+        return True
+    return item.category in ("ukraine", "middleeast") and any(
+        term in text for term in ("war", "attack", "strike", "ceasefire", "sanction", "nuclear", "united nations")
     )
 
 
@@ -179,8 +210,10 @@ def topic_eligible(item: Item, category: str) -> bool:
         substantive = any(x in text for x in ("technology", "reactor", "storage", "capacity", "plant", "project", "deployment", "breakthrough", "commercial", "grid", "battery", "fusion", "solar", "wind", "geothermal", "hydrogen"))
         return technology and substantive
     if category == "other":
-        return source_score(item.source, item.url) >= 3 and any(
-            re.search(rf"\b{re.escape(term)}\b", text) for term in MAJOR_TERMS
+        return (
+            source_score(item.source, item.url) >= 3
+            and globally_significant(item)
+            and not weak_syndication_item(item)
         )
     return True
 
@@ -199,10 +232,12 @@ def selection_eligible(item: Item, category: str) -> bool:
     if not topic_eligible(item, category):
         return False
     if category in ("ukraine", "middleeast", "migration", "other"):
-        return True
+        return not weak_syndication_item(item)
     text = f" {item.title} {item.summary} ".casefold()
     relevance = sum(term in text for term in TOPIC_TERMS.get(category, ()))
     major = sum(bool(re.search(rf"\b{re.escape(term)}\b", text)) for term in MAJOR_TERMS)
+    if weak_syndication_item(item):
+        return len(item.sources) >= 2
     return source_score(item.source, item.url) >= 3 or relevance >= 2 or major >= 1 or len(item.sources) >= 2
 
 
@@ -488,9 +523,13 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
     # never reintroduces a discarded candidate or triggers extra translation.
     important_candidates = [
         item for item in ranked
-        if source_score(item.source, item.url) >= 3
-        or len(item.sources) >= 2
-        or item.category in ("ukraine", "middleeast")
+        if not weak_syndication_item(item)
+        and globally_significant(item)
+        and (
+            source_score(item.source, item.url) >= 3
+            or len(item.sources) >= 2
+            or item.category in ("ukraine", "middleeast")
+        )
     ]
     sections["must"] = select_section(important_candidates, "must", IMPORTANT_LIMIT)
     important_ids = {id(x) for x in sections["must"]}
