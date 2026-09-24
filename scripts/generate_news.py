@@ -17,7 +17,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from news_common import MAX_SECTION_ITEMS, SECTIONS, chinese_failure, chinese_dominant, validate_html
+from news_common import (
+    MAX_SECTION_ITEMS, SECTIONS, canonical_source_url, chinese_failure,
+    chinese_dominant, validate_html,
+)
 
 SGT = ZoneInfo("Asia/Singapore")
 UA = "Chatgpt-News daily briefing/1.0 (+https://github.com/sunzhe0073/Chatgpt-News)"
@@ -152,6 +155,12 @@ def title_similarity(left: Item, right: Item) -> float:
     return len(a & b) / max(1, min(len(a), len(b)))
 
 
+def source_urls(item: Item) -> set[str]:
+    """Return canonical identities for every source URL rendered by an item."""
+    sources = item.sources or [(item.source, item.url)]
+    return {canonical_source_url(url) for _, url in sources}
+
+
 def ranking_score(item: Item, category: str, newest: datetime) -> float:
     """Score freshness, authority, topic fit and major-event signals deterministically."""
     age_hours = max(0.0, (newest - item.published).total_seconds() / 3600)
@@ -164,12 +173,18 @@ def ranking_score(item: Item, category: str, newest: datetime) -> float:
     return freshness + source_score(item.source, item.url) * 2.0 + relevance * 1.5 + major * 1.25 + completeness + corroboration
 
 
-def select_section(items: list[Item], category: str, limit: int = MAX_SECTION_ITEMS) -> list[Item]:
+def select_section(
+    items: list[Item],
+    category: str,
+    limit: int = MAX_SECTION_ITEMS,
+    excluded_urls: set[str] | None = None,
+) -> list[Item]:
     """Select a diverse, high-quality section using a deterministic MMR-like rank."""
     if not items or limit <= 0:
         return []
     newest = max(item.published for item in items)
-    remaining = list(items)
+    used_urls = set(excluded_urls or ())
+    remaining = [item for item in items if source_urls(item).isdisjoint(used_urls)]
     selected: list[Item] = []
     publisher_counts: dict[str, int] = {}
     while remaining and len(selected) < limit:
@@ -181,20 +196,34 @@ def select_section(items: list[Item], category: str, limit: int = MAX_SECTION_IT
 
         winner = max(remaining, key=score)
         selected.append(winner)
+        used_urls.update(source_urls(winner))
         publisher_counts[publisher_key(winner)] = publisher_counts.get(publisher_key(winner), 0) + 1
         # A looser second event check catches alternate headlines missed by the
         # primary merge, preventing one story from consuming several slots.
-        remaining = [item for item in remaining if item is not winner and title_similarity(item, winner) < 0.58]
+        remaining = [
+            item for item in remaining
+            if item is not winner
+            and source_urls(item).isdisjoint(used_urls)
+            and title_similarity(item, winner) < 0.58
+        ]
     return selected
 
 
 def select_for_translation(items: list[Item]) -> list[Item]:
-    """Select at most ten events per topic before invoking Google Cloud Translation."""
+    """Select and backfill topics without reusing a source URL globally."""
     selected: list[Item] = []
+    used_urls: set[str] = set()
     for category, _ in SECTIONS:
         if category == "must":
             continue
-        selected.extend(select_section([item for item in items if item.category == category], category))
+        section = select_section(
+            [item for item in items if item.category == category],
+            category,
+            excluded_urls=used_urls,
+        )
+        selected.extend(section)
+        for item in section:
+            used_urls.update(source_urls(item))
     return selected
 
 
@@ -203,12 +232,14 @@ def deduplicate(items: list[Item]) -> list[Item]:
     for item in sorted(items, key=lambda x: x.published, reverse=True):
         words = canonical_words(item.title)
         match = None
-        for existing in groups:
+        item_url = canonical_source_url(item.url)
+        # URL identity is stronger evidence than headline similarity. Search it
+        # first so one syndicated URL cannot be attached to two event groups.
+        match = next((existing for existing in groups if item_url in source_urls(existing)), None)
+        for existing in groups if match is None else ():
             other = canonical_words(existing.title)
             similarity = len(words & other) / max(1, min(len(words), len(other)))
-            item_url = urllib.parse.urlsplit(item.url)._replace(query="", fragment="").geturl().rstrip("/")
-            existing_url = urllib.parse.urlsplit(existing.url)._replace(query="", fragment="").geturl().rstrip("/")
-            if item_url == existing_url or similarity >= 0.72:
+            if similarity >= 0.72:
                 match = existing
                 break
         if match:
@@ -219,8 +250,12 @@ def deduplicate(items: list[Item]) -> list[Item]:
             item.sources = [(item.source, item.url)]
             groups.append(item)
     for item in groups:
-        unique = {(name, url) for name, url in item.sources}
-        item.sources = sorted(unique, key=lambda x: source_score(*x), reverse=True)[:3]
+        unique: dict[str, tuple[str, str]] = {}
+        for name, url in item.sources:
+            key = canonical_source_url(url)
+            if key not in unique or source_score(name, url) > source_score(*unique[key]):
+                unique[key] = (name, url)
+        item.sources = sorted(unique.values(), key=lambda x: source_score(*x), reverse=True)[:3]
     return groups
 
 
@@ -371,9 +406,10 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
     for item in items:
         if id(item) not in important_ids:
             sections[item.category].append(item)
+    rendered_count = sum(len(section_items) for section_items in sections.values())
     nav = "".join(f'<a href="#{key}">{html.escape(label)}</a>' for key, label in SECTIONS)
     chunks = [f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate"><meta name="brief-version" content="{now.astimezone(SGT).isoformat(timespec="minutes")}"><title>私人 AI 新闻简报｜{day}</title><style>{STYLE}</style></head><body><main class="w">',
-              f'<header><div class="eyebrow">PRIVATE INTELLIGENCE BRIEF · ENGLISH SOURCES</div><h1>私人 AI 新闻简报</h1><p class="lead">{day}。自动汇集过去 36 小时的英文新闻；保留高召回结果，并在事件层面合并重复报道。</p><div class="stats"><span class="pill">{len(items)} 件独立事件</span><span class="pill">仅英文信息源</span><span class="pill">更新：{now.astimezone(SGT):%H:%M}</span></div></header><nav>{nav}</nav>']
+              f'<header><div class="eyebrow">PRIVATE INTELLIGENCE BRIEF · ENGLISH SOURCES</div><h1>私人 AI 新闻简报</h1><p class="lead">{day}。自动汇集过去 36 小时的英文新闻；保留高召回结果，并在事件层面合并重复报道。</p><div class="stats"><span class="pill">{rendered_count} 件独立事件</span><span class="pill">仅英文信息源</span><span class="pill">更新：{now.astimezone(SGT):%H:%M}</span></div></header><nav>{nav}</nav>']
     for key, label in SECTIONS:
         chunks.append(f'<section id="{key}"><h2>{html.escape(label)}</h2><div class="grid">')
         if not sections[key]:
@@ -387,7 +423,7 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
             chunks.append(f'<article class="card"><span class="tag">{html.escape(category_label)}</span><h3>{html.escape(item.title)}</h3><p>{html.escape(summary)}</p><div class="src">来源：{links} · 原文发布时间：{item.published.astimezone(SGT):%Y-%m-%d %H:%M} SGT</div></article>')
         chunks.append('</div></section>')
     warning_text = "；".join(warnings) if warnings else "全部配置来源正常响应。"
-    chunks.append(f'<section class="qa" id="qa"><strong>运行质量记录</strong><p>采集 {len(items)} 件去重事件；只使用英文查询与英文来源。日期窗口、链接、重复标题和 HTML 分类结构已自动检查。</p><p>单个来源失败会被跳过，不中断其他来源：{html.escape(warning_text)}</p><p>最后更新：{now.astimezone(SGT):%Y-%m-%d %H:%M}（新加坡时间）</p></section></main></body></html>')
+    chunks.append(f'<section class="qa" id="qa"><strong>运行质量记录</strong><p>收录 {rendered_count} 件去重事件；只使用英文查询与英文来源。日期窗口、链接、重复标题和 HTML 分类结构已自动检查。</p><p>单个来源失败会被跳过，不中断其他来源：{html.escape(warning_text)}</p><p>最后更新：{now.astimezone(SGT):%Y-%m-%d %H:%M}（新加坡时间）</p></section></main></body></html>')
     output.write_text("".join(chunks), encoding="utf-8")
 
 
