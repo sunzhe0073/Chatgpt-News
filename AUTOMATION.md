@@ -1,74 +1,97 @@
 # Daily news automation
 
 `Generate daily news brief` runs at **01:05 UTC (09:05 Singapore time)** every
-day and can also be started with **Run workflow** in GitHub Actions. It collects
-recent items from English BBC, Guardian, NPR and UN feeds plus seven broad
-Google News searches. A failure from one feed is recorded in the generated
-quality section and does not stop the other feeds.
+day and can also be started with **Run workflow** in GitHub Actions. GitHub cron
+jobs can be delayed while runners are busy; 09:05 is the scheduled time rather
+than a guaranteed start-time SLA.
 
-After collection, normalisation, event-level deduplication, categorisation and
-per-topic selection, the workflow translates only the selected English titles
-and publisher-supplied RSS descriptions on the Actions runner with
-the open-source **Argos Translate** English-to-Chinese neural model. OpenCC then
-normalises the result to Simplified Chinese. This is translation, not generative
-summarisation: the summary is a translation of the source's description, so the
-pipeline does not add unsupported background or implications. If a feed omits
-its description, a clearly limited Chinese rendering of the headline and the
-absence of further feed detail is used instead. Publisher names and original
-links are never translated or replaced. A conservative postprocessor removes
-feed/publisher wrappers, duplicate sentences, stray quotation marks and
-machine-translation punctuation artifacts; it does not paraphrase or add facts.
-The existing Chinese-dominance checks still reject incomplete or English output
-before it can be committed.
+The job collects recent items from English BBC, Guardian, NPR and UN feeds plus
+seven broad English Google News searches. A failure from one feed is recorded
+in the generated quality section and does not stop the other feeds. If no
+current candidates can be collected, the job fails rather than publishing an
+empty brief.
 
-The generator applies a 36-hour freshness window, rejects obviously low-value
-formats and non-English titles, categorises relevant stories, and merges exact
-canonical URLs and highly similar headlines at event level. Each topic then
-selects at most ten events using freshness, source authority, topic relevance,
-major-event terms, description completeness, corroboration, publisher diversity
-and similarity to already selected events. When an event has multiple reports,
-links from reliable, generally free publishers are ordered first; up to three
-distinct sources are retained. “今日最重要” is a maximum-ten view drawn only
-from this already selected pool; it does not reintroduce or retranslate events.
+After collection, the generator applies a 36-hour freshness window, rejects
+obviously low-value formats and non-English titles, categorises relevant
+stories, and merges exact canonical URLs and highly similar headlines at event
+level. Each topic then selects at most ten events using freshness, source
+authority, topic relevance, major-event terms, description completeness,
+corroboration, publisher diversity and similarity to already selected events.
+Up to three source links are retained for a merged event. “今日最重要” is a
+maximum-ten view drawn from this already selected pool; it does not reintroduce
+or retranslate discarded events.
+
+Only selected English titles and publisher-supplied RSS descriptions are sent
+to **Google Cloud Translation v3**. The workflow authenticates with GitHub OIDC
+and Google Cloud Workload Identity Federation; it does not use a service-account
+key or user-created API key. OpenCC normalises returned text to Simplified
+Chinese. Translation is not generative summarisation: summaries remain
+translations of publisher feed descriptions. If a feed has no description, the
+generator translates a clearly limited headline-based notice instead.
+
+Transient rate-limit, service and network errors use the Google client
+library's bounded retry policy. An individual translation failure removes only
+that item and is recorded in the quality section. Authentication/client setup
+failures stop the run, and if no safely translated items remain the generator
+refuses to publish an English brief. Chinese-dominance checks reject incomplete
+or untranslated output before it can be committed.
 
 The workflow validates the Singapore date, external links, duplicate titles,
-the hard ten-event maximum for every section, and all required HTML sections
-before committing only that day's
-`私人AI新闻简报-YYYY-MM-DD.html`. Historical briefs are never removed. The static
-`index.html` resolves the visitor's current Singapore date and loads that dated
-file.
+reused source URLs, the declared event count, the hard ten-event maximum for
+every section, Chinese titles and summaries, and all required HTML sections.
+It commits only that day's `私人AI新闻简报-YYYY-MM-DD.html`; historical briefs are
+never removed. The static `index.html` resolves the visitor's current Singapore
+date and loads that dated file without using a stale cached response.
 
-## Repository settings
+## Google Cloud configuration
 
-No user-created API key, paid API, hosted inference service, or `models: read`
-permission is used. Argos Translate and OpenCC are free/open-source software;
-translation runs locally on the already-provisioned GitHub Actions runner and
-has no per-request quota or inference fee. On a cold cache the workflow obtains
-the Python packages from PyPI and the free language-model artifact from the
-Argos package index; `actions/cache` retains the model for later runs. Thus it
-does depend on those download hosts when installing a cold runner, but daily
-translation does not depend on the availability or policy of an external AI
-API. The standard `GITHUB_TOKEN` is used only by checkout and `git push` under
-the `contents: write` permission.
-In **Settings → Actions → General →
-Workflow permissions**, allow read and write permissions if the organisation
-overrides workflow-level permissions. Any branch protection on `main` must also
-allow GitHub Actions to push, or the commit step must be adapted to use a pull
-request.
+The repository contains only public resource identifiers for the Workload
+Identity Provider and service account. In Google Cloud, administrators must:
 
-A commit pushed with `GITHUB_TOKEN` does not emit a second workflow run, so the
-unchanged Pages job is additionally triggered by a successful
-`workflow_run` completion of the generator. Existing direct pushes to `main`
-and manual Pages deployments continue to work.
+1. enable Cloud Translation API for the configured project;
+2. allow the GitHub identity to impersonate only the translation service
+   account with `roles/iam.workloadIdentityUser`;
+3. restrict the provider attribute condition to this repository and, where
+   practical, the trusted branch and workflow;
+4. grant the service account only a translation role that includes
+   `cloudtranslate.generalModels.predict`; and
+5. avoid Owner, Editor, IAM administration or service-account-key roles.
+
+The Google Cloud API is an external metered service with quotas. IAM denials are
+not transient and should be diagnosed in the Actions log and Google Cloud Audit
+Logs rather than retried.
+
+The standard `GITHUB_TOKEN` is used by checkout and `git push` under the
+workflow's `contents: write` permission. In **Settings → Actions → General →
+Workflow permissions**, allow read and write permissions if organisation-level
+policy overrides workflow permissions. Branch protection on `main` must either
+allow GitHub Actions to push or use a pull-request based publication design.
+
+A commit pushed with `GITHUB_TOKEN` does not start another push workflow. The
+Pages workflow is therefore also triggered by successful completion of the
+generator through `workflow_run`. Direct pushes to `main` and manual Pages
+deployments continue to work.
 
 ## Local checks
+
+Deterministic tests do not need Google credentials or network access:
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile scripts/*.py
-python3 -m pip install --requirement requirements-translation.txt
-python3 scripts/setup_translation.py
-python3 scripts/generate_news.py
+python3 scripts/generate_news.py \
+  --date 2026-09-21 \
+  --fixture tests/fixtures/news.xml \
+  --translation-fixture tests/fixtures/translations.json \
+  --output /tmp/news-brief.html
+python3 scripts/validate_news.py /tmp/news-brief.html --date 2026-09-21
 ```
 
-The last command needs outbound access to the configured publishers.
+A live local run additionally requires the pinned packages, outbound feed
+access, `GOOGLE_CLOUD_PROJECT`, and Application Default Credentials authorised
+for Cloud Translation:
+
+```bash
+python3 -m pip install --requirement requirements-translation.txt
+python3 scripts/generate_news.py
+```

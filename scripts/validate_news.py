@@ -11,4 +11,7 @@ args = parser.parse_args()
 errors = validate_html(args.path, args.date)
 if errors:
     raise SystemExit("\n".join(errors))
-print(f"Validated {args.path}: date, links, duplicates, and section structure OK")
+print(
+    f"Validated {args.path}: date, links, event counts, Chinese text, "
+    "duplicates, and section structure OK"
+)

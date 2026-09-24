@@ -1,2 +1,11 @@
 __pycache__/
 *.py[cod]
+.env
+.env.*
+.venv/
+venv/
+.coverage
+.pytest_cache/
+.mypy_cache/
+gha-creds-*.json
+application_default_credentials.json

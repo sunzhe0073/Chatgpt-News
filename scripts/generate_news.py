@@ -228,6 +228,7 @@ def load_local_translator():
     """Create a Google Cloud Translation English-to-Chinese translator."""
     try:
         import os
+        from google.api_core.retry import Retry
         from google.cloud import translate_v3 as translate
         from opencc import OpenCC
     except ImportError as exc:
@@ -239,6 +240,9 @@ def load_local_translator():
     client = translate.TranslationServiceClient()
     parent = f"projects/{project_id}/locations/global"
     simplified = OpenCC("t2s")
+    # GAPIC's transient-error predicate retries rate limits and temporary
+    # service/network failures, but deliberately does not retry IAM denials.
+    retry = Retry(initial=1.0, maximum=8.0, multiplier=2.0, deadline=30.0)
 
     def translate_text(value: str) -> str:
         response = client.translate_text(
@@ -248,7 +252,9 @@ def load_local_translator():
                 "mime_type": "text/plain",
                 "source_language_code": "en",
                 "target_language_code": "zh-CN",
-            }
+            },
+            retry=retry,
+            timeout=30.0,
         )
         if not response.translations:
             raise RuntimeError("Google Cloud Translation returned no translation")
@@ -306,7 +312,7 @@ def postprocess_chinese(value: str, *, title: bool = False) -> str:
 
 
 def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> list[str]:
-    """Translate publisher text locally, dropping individual unsafe results."""
+    """Translate publisher text, dropping individual failed or unsafe results."""
     fixture_data = json.loads(fixture.read_text(encoding="utf-8")) if fixture else None
     local_translate = translator or (None if fixture_data is not None else load_local_translator())
     accepted: list[Item] = []
@@ -422,7 +428,7 @@ def main() -> int:
         print("No current items were collected; refusing to replace today's brief.", file=sys.stderr)
         return 1
     # Keep collection broad, but rank and cap each topic before the expensive
-    # local Google Cloud Translation pass. A failed translation removes only that selected item.
+    # Google Cloud Translation pass. A failed translation removes only that selected item.
     items = select_for_translation(candidates)
     try:
         warnings.extend(translate_batch(items, args.translation_fixture))
