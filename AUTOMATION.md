@@ -1,9 +1,6 @@
 # Daily news automation
 
-`Generate daily news brief` runs at **01:05 UTC (09:05 Singapore time)** every
-day and can also be started with **Run workflow** in GitHub Actions. GitHub cron
-jobs can be delayed while runners are busy; 09:05 is the scheduled time rather
-than a guaranteed start-time SLA.
+`Generate daily news brief` is scheduled at **01:05 UTC (09:05 Singapore time)** every day and can also be started with **Run workflow**. Because GitHub cron jobs can be delayed, a second recovery schedule runs at **02:05 UTC (10:05 Singapore time)**. The recovery run exits after checkout when that Singapore-date brief already exists, so a successful primary run is not regenerated.
 
 The job collects recent items from English BBC, Guardian, NPR and UN feeds plus
 seven broad English Google News searches. A failure from one feed is recorded
@@ -14,22 +11,18 @@ empty brief.
 After collection, the generator applies a 36-hour freshness window, rejects
 obviously low-value formats and non-English titles, categorises relevant
 stories, and merges exact canonical URLs and highly similar headlines at event
-level. Each topic then selects at most ten events using freshness, source
-authority, topic relevance, major-event terms, description completeness,
-corroboration, publisher diversity and similarity to already selected events.
+level. Each topic then selects at most ten events using freshness, source authority, topic relevance, major-event terms, description completeness, corroboration, publisher diversity and similarity to already selected events. Selection is not a quota: candidates below the deterministic quality threshold are omitted rather than used to fill a section. Obvious PR/SEO market-report material and known low-value syndication domains are excluded from the final pool, and robotics/energy/other sections require stronger core-topic evidence.
 Tracking-only URL parameters are ignored for article identity, while meaningful
 query parameters are preserved. Topic selection shares one global source-URL
 set, so a lower-priority topic skips a URL already selected by a higher-priority
-topic and continues down its ranked candidates to backfill the slot. Up to three
-source links are retained for a merged event. “今日最重要” is a maximum-ten view
+topic and continues down its ranked candidates to backfill the slot. Up to three source links are retained for a merged event. “今日最重要” is a selective maximum-seven view
 drawn from this already selected pool; those items are removed from their topic
 sections so every event card and source URL is rendered only once.
 
 Only selected English titles and publisher-supplied RSS descriptions are sent
 to **Google Cloud Translation v3**. The workflow authenticates with GitHub OIDC
 and Google Cloud Workload Identity Federation; it does not use a service-account
-key or user-created API key. OpenCC normalises returned text to Simplified
-Chinese. Translation is not generative summarisation: summaries remain
+key or user-created API key. OpenCC normalises returned text to Simplified Chinese. A small maintainable glossary masks important names such as OpenAI, Anthropic, NVIDIA and Google during live translation and restores them afterward. Translation is not generative summarisation: summaries remain
 translations of publisher feed descriptions. If a feed has no description, the
 generator translates a clearly limited headline-based notice instead.
 
