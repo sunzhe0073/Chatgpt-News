@@ -49,7 +49,18 @@ TOPIC_TERMS = {
     "robots": ("robot", "humanoid", "autonomous", "automation"),
     "energy": ("energy", "battery", "nuclear", "fusion", "solar", "wind power", "grid", "hydrogen", "geothermal"),
 }
-LOW_QUALITY = ("opinion", "horoscope", "quiz", "podcast", "live updates", "sponsored")
+LOW_QUALITY = (
+    "opinion", "horoscope", "quiz", "podcast", "live updates", "sponsored",
+    "press release", "market size", "market forecast", "market outlook",
+    "industry report", "research report", "projected to reach", "cagr",
+)
+BLOCKED_PUBLISHERS = ("openpr.com", "indexbox", "konsulteer.com", "inkorr.com")
+IMPORTANT_LIMIT = 7
+PROPER_NOUNS = (
+    "OpenAI", "Anthropic", "ChatGPT", "Gemini", "NVIDIA", "Microsoft",
+    "Google", "Meta", "Tesla", "SpaceX", "Unitree", "Figure AI",
+    "Boston Dynamics", "DeepMind", "Reuters", "BBC", "NPR",
+)
 MAJOR_TERMS = (
     "breaking", "war", "attack", "strike", "invasion", "ceasefire", "sanction",
     "election", "president", "prime minister", "government", "court", "dead", "killed",
@@ -137,6 +148,43 @@ def category_for(item: Item, hinted: str) -> str:
     return best if scores[best] else hinted
 
 
+def low_quality_item(item: Item) -> bool:
+    text = f"{item.title} {item.summary} {item.source} {item.url}".casefold()
+    return any(term in text for term in LOW_QUALITY) or any(
+        publisher in text for publisher in BLOCKED_PUBLISHERS
+    )
+
+
+def topic_eligible(item: Item, category: str) -> bool:
+    """Require the story's core subject to fit the section, not a stray keyword."""
+    text = f" {item.title} {item.summary} ".casefold()
+    if low_quality_item(item):
+        return False
+    if category == "ukraine":
+        return any(x in text for x in ("ukrain", "kyiv", "zelensk")) and any(
+            x in text for x in ("russia", "war", "attack", "strike", "invasion", "military", "putin")
+        )
+    if category == "middleeast":
+        return any(x in text for x in ("gaza", "israel", "iran", "hamas", "hezbollah", "leban", "syria", "yemen", "houthi", "middle east", "west bank", "palestin"))
+    if category == "migration":
+        return any(x in text for x in ("migrant", "immigration", "asylum", "refugee", "border", "deport", "immigration and customs enforcement", " ice "))
+    if category == "ai":
+        return any(x in text for x in ("artificial intelligence", " ai ", "openai", "anthropic", "deepmind", "chatgpt", "gemini", "nvidia", "large language model", "machine learning"))
+    if category == "robots":
+        robot = any(x in text for x in ("robot", "robotics", "humanoid", "embodied ai"))
+        substantive = any(x in text for x in ("humanoid", "embodied ai", "autonomous", "industrial", "service robot", "deployment", "factory", "warehouse", "teleoperation", "locomotion", "manipulation", "unitree", "figure ai", "boston dynamics"))
+        return robot and substantive
+    if category == "energy":
+        technology = any(x in text for x in ("battery", "nuclear", "fusion", "small modular reactor", " smr ", "grid", "energy storage", "solar", "wind power", "geothermal", "hydrogen", "renewable energy"))
+        substantive = any(x in text for x in ("technology", "reactor", "storage", "capacity", "plant", "project", "deployment", "breakthrough", "commercial", "grid", "battery", "fusion", "solar", "wind", "geothermal", "hydrogen"))
+        return technology and substantive
+    if category == "other":
+        return source_score(item.source, item.url) >= 3 and any(
+            re.search(rf"\\b{re.escape(term)}\\b", text) for term in MAJOR_TERMS
+        )
+    return True
+
+
 def source_score(source: str, url: str) -> int:
     text = f"{source} {url}".casefold()
     score = 3 if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", ".gov", ".int")) else 0
@@ -184,7 +232,7 @@ def select_section(
         return []
     newest = max(item.published for item in items)
     used_urls = set(excluded_urls or ())
-    remaining = [item for item in items if source_urls(item).isdisjoint(used_urls)]
+    remaining = [item for item in items if source_urls(item).isdisjoint(used_urls) and (category == "must" or topic_eligible(item, category))]
     selected: list[Item] = []
     publisher_counts: dict[str, int] = {}
     while remaining and len(selected) < limit:
@@ -195,6 +243,8 @@ def select_section(
             return (value, item.published, item.title.casefold(), item.url)
 
         winner = max(remaining, key=score)
+        if category != "must" and ranking_score(winner, category, newest) < 6.0:
+            break
         selected.append(winner)
         used_urls.update(source_urls(winner))
         publisher_counts[publisher_key(winner)] = publisher_counts.get(publisher_key(winner), 0) + 1
@@ -257,6 +307,26 @@ def deduplicate(items: list[Item]) -> list[Item]:
                 unique[key] = (name, url)
         item.sources = sorted(unique.values(), key=lambda x: source_score(*x), reverse=True)[:3]
     return groups
+
+
+def protect_proper_nouns(value: str) -> tuple[str, dict[str, str]]:
+    """Mask a small stable glossary so machine translation cannot corrupt names."""
+    mapping: dict[str, str] = {}
+    protected = value
+    for index, term in enumerate(sorted(PROPER_NOUNS, key=len, reverse=True)):
+        token = f"ZXQPN{index}QXZ"
+        pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", re.IGNORECASE)
+        if pattern.search(protected):
+            protected = pattern.sub(token, protected)
+            mapping[token] = term
+    return protected, mapping
+
+
+def restore_proper_nouns(value: str, mapping: dict[str, str]) -> str:
+    for token, term in mapping.items():
+        value = value.replace(token, term)
+    value = re.sub(r"\\bAnthrop(?:ologie|ico)\\b", "Anthropic", value, flags=re.IGNORECASE)
+    return value
 
 
 def load_local_translator():
@@ -362,8 +432,10 @@ def translate_batch(items: list[Item], fixture: Path | None = None, translator=N
             title, summary = value.get("title"), value.get("summary")
         else:
             try:
-                title = local_translate(item.title)
-                summary = local_translate(summary_source(item))
+                protected_title, title_names = protect_proper_nouns(item.title)
+                protected_summary, summary_names = protect_proper_nouns(summary_source(item))
+                title = restore_proper_nouns(local_translate(protected_title), title_names)
+                summary = restore_proper_nouns(local_translate(protected_summary), summary_names)
             except Exception as exc:
                 warnings.append(f'Translation skipped "{original_title}": {type(exc).__name__}: {exc}')
                 continue
@@ -401,7 +473,13 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
     )
     # The important list is a view over the already topic-selected pool. It
     # never reintroduces a discarded candidate or triggers extra translation.
-    sections["must"] = select_section(ranked, "must", MAX_SECTION_ITEMS)
+    important_candidates = [
+        item for item in ranked
+        if source_score(item.source, item.url) >= 3
+        or len(item.sources) >= 2
+        or item.category in ("ukraine", "middleeast")
+    ]
+    sections["must"] = select_section(important_candidates, "must", IMPORTANT_LIMIT)
     important_ids = {id(x) for x in sections["must"]}
     for item in items:
         if id(item) not in important_ids:
@@ -453,10 +531,10 @@ def main() -> int:
         try:
             payload = args.fixture.read_bytes() if args.fixture else fetch(url)
             for item in feed_items(payload, name, now):
-                title_lower = item.title.casefold()
-                if cutoff <= item.published <= now + timedelta(hours=2) and looks_english(item.title) and not any(term in title_lower for term in LOW_QUALITY):
+                if cutoff <= item.published <= now + timedelta(hours=2) and looks_english(item.title):
                     item.category = category_for(item, hinted)
-                    collected.append(item)
+                    if not low_quality_item(item) and topic_eligible(item, item.category):
+                        collected.append(item)
         except Exception as exc:  # one unavailable publisher must not stop the run
             warnings.append(f"{name}: {type(exc).__name__}")
     candidates = deduplicate(collected)
