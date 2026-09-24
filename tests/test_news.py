@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from generate_news import (
     Item, deduplicate, postprocess_chinese, render, select_for_translation,
-    select_section, source_urls, summary_source, translate_batch,
+    reserve_translation_usage, select_section, source_urls, summary_source, translate_batch,
 )
 from news_common import BriefTextParser, canonical_source_url, chinese_dominant, validate_html
 
@@ -24,6 +24,31 @@ class NewsGenerationTest(unittest.TestCase):
             f"Distinct report {number} describes an artificial intelligence launch and agreement.",
             category,
         )
+
+    def test_translation_monthly_hard_cap_reserves_and_blocks(self):
+        items = [self.make_item(1)]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "usage.json"
+            first = reserve_translation_usage(items, datetime(2026, 9, 24, tzinfo=timezone.utc), ledger)
+            self.assertGreater(first["characters"], 0)
+            ledger.write_text(
+                '{"month":"2026-09","characters":399999}\n', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(RuntimeError, "hard cap would be exceeded"):
+                reserve_translation_usage(items, datetime(2026, 9, 24, tzinfo=timezone.utc), ledger)
+
+    def test_translation_usage_resets_for_new_month(self):
+        items = [self.make_item(2)]
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / "usage.json"
+            ledger.write_text(
+                '{"month":"2026-08","characters":399999}\n', encoding="utf-8"
+            )
+            state = reserve_translation_usage(
+                items, datetime(2026, 9, 1, tzinfo=timezone.utc), ledger
+            )
+            self.assertEqual(state["month"], "2026-09")
+            self.assertLess(state["characters"], 399999)
 
     def test_chinese_with_english_names_and_acronyms_is_accepted(self):
         self.assertTrue(chinese_dominant("Reuters报道，OpenAI与BBC讨论AI监管，NATO也回应了Trump的讲话。"))

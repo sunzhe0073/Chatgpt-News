@@ -69,6 +69,8 @@ GLOBAL_SIGNIFICANCE_TERMS = (
     "famine", "election", "coup", "emergency",
 )
 IMPORTANT_LIMIT = 7
+TRANSLATION_MONTHLY_CHAR_LIMIT = 400_000
+TRANSLATION_USAGE_FILE = Path(".translation-usage.json")
 PROPER_NOUNS = (
     "OpenAI", "Anthropic", "ChatGPT", "Gemini", "NVIDIA", "Microsoft",
     "Google", "Meta", "Tesla", "SpaceX", "Unitree", "Figure AI",
@@ -487,6 +489,34 @@ def postprocess_chinese(value: str, *, title: bool = False) -> str:
     return value
 
 
+def translation_input_chars(items: list[Item]) -> int:
+    """Return the exact source-character count planned for Cloud Translation."""
+    return sum(len(item.title) + len(summary_source(item)) for item in items)
+
+
+def reserve_translation_usage(items: list[Item], now: datetime, path: Path = TRANSLATION_USAGE_FILE) -> dict:
+    """Reserve this run's translation characters before any paid API call."""
+    month = now.astimezone(SGT).strftime("%Y-%m")
+    planned = translation_input_chars(items)
+    state = {"month": month, "characters": 0}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if loaded.get("month") == month:
+                state["characters"] = max(0, int(loaded.get("characters", 0)))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            raise RuntimeError("Translation usage ledger is invalid; refusing paid translation")
+    projected = state["characters"] + planned
+    if projected > TRANSLATION_MONTHLY_CHAR_LIMIT:
+        raise RuntimeError(
+            f"Translation monthly hard cap would be exceeded: "
+            f"{state['characters']} + {planned} > {TRANSLATION_MONTHLY_CHAR_LIMIT} characters"
+        )
+    state = {"month": month, "characters": projected}
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return state
+
+
 def translate_batch(items: list[Item], fixture: Path | None = None, translator=None) -> list[str]:
     """Translate publisher text, dropping individual failed or unsafe results."""
     fixture_data = json.loads(fixture.read_text(encoding="utf-8")) if fixture else None
@@ -628,6 +658,8 @@ def main() -> int:
     # Google Cloud Translation pass. A failed translation removes only that selected item.
     items = select_for_translation(candidates)
     try:
+        if not args.translation_fixture:
+            reserve_translation_usage(items, now)
         warnings.extend(translate_batch(items, args.translation_fixture))
     except Exception as exc:
         print(str(exc), file=sys.stderr)
