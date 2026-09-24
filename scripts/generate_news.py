@@ -495,8 +495,14 @@ def render(items: list[Item], now: datetime, output: Path, warnings: list[str]) 
     sections["must"] = select_section(important_candidates, "must", IMPORTANT_LIMIT)
     important_ids = {id(x) for x in sections["must"]}
     for item in items:
-        if id(item) not in important_ids and len(sections[item.category]) < MAX_SECTION_ITEMS:
+        if id(item) in important_ids:
+            continue
+        if len(sections[item.category]) < MAX_SECTION_ITEMS:
             sections[item.category].append(item)
+        elif len(sections["must"]) < MAX_SECTION_ITEMS:
+            # Defensive fallback for callers that bypass normal preselection.
+            # Production selection already caps each topic before translation.
+            sections["must"].append(item)
     rendered_count = sum(len(section_items) for section_items in sections.values())
     nav = "".join(f'<a href="#{key}">{html.escape(label)}</a>' for key, label in SECTIONS)
     chunks = [f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Cache-Control" content="no-cache,no-store,must-revalidate"><meta name="brief-version" content="{now.astimezone(SGT).isoformat(timespec="minutes")}"><title>私人 AI 新闻简报｜{day}</title><style>{STYLE}</style></head><body><main class="w">',
