@@ -338,7 +338,7 @@ def protect_proper_nouns(value: str) -> tuple[str, dict[str, str]]:
 def restore_proper_nouns(value: str, mapping: dict[str, str]) -> str:
     for token, term in mapping.items():
         value = value.replace(token, term)
-    value = re.sub(r"\bAnthrop(?:ologie|ico)\b", "Anthropic", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<![A-Za-z])Anthrop(?:ologie|ico)(?![A-Za-z])", "Anthropic", value, flags=re.IGNORECASE)
     return value
 
 
