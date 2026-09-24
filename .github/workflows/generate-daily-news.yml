@@ -4,6 +4,9 @@ on:
   schedule:
     # GitHub cron uses UTC. 01:05 UTC is 09:05 in Singapore (UTC+8).
     - cron: "5 1 * * *"
+    # Simple recovery run at 10:05 Singapore time. If the first run already
+    # published the same brief, the commit step exits without a new commit.
+    - cron: "5 2 * * *"
   workflow_dispatch:
 
 permissions:
