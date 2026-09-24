@@ -194,6 +194,18 @@ def source_score(source: str, url: str) -> int:
     return 1
 
 
+def selection_eligible(item: Item, category: str) -> bool:
+    """Apply a transparent quality floor without imposing a minimum item count."""
+    if not topic_eligible(item, category):
+        return False
+    if category in ("ukraine", "middleeast", "migration", "other"):
+        return True
+    text = f" {item.title} {item.summary} ".casefold()
+    relevance = sum(term in text for term in TOPIC_TERMS.get(category, ()))
+    major = sum(bool(re.search(rf"\b{re.escape(term)}\b", text)) for term in MAJOR_TERMS)
+    return source_score(item.source, item.url) >= 3 or relevance >= 2 or major >= 1 or len(item.sources) >= 2
+
+
 def publisher_key(item: Item) -> str:
     """Return a stable publisher identity for diversity scoring."""
     source = re.sub(r"\s+(world|technology|news)$", "", item.source.casefold()).strip()
@@ -235,7 +247,7 @@ def select_section(
         return []
     newest = max(item.published for item in items)
     used_urls = set(excluded_urls or ())
-    remaining = [item for item in items if source_urls(item).isdisjoint(used_urls) and (category == "must" or topic_eligible(item, category))]
+    remaining = [item for item in items if source_urls(item).isdisjoint(used_urls) and (category == "must" or selection_eligible(item, category))]
     selected: list[Item] = []
     publisher_counts: dict[str, int] = {}
     while remaining and len(selected) < limit:
@@ -246,8 +258,6 @@ def select_section(
             return (value, item.published, item.title.casefold(), item.url)
 
         winner = max(remaining, key=score)
-        if category != "must" and ranking_score(winner, category, newest) < 10.0:
-            break
         selected.append(winner)
         used_urls.update(source_urls(winner))
         publisher_counts[publisher_key(winner)] = publisher_counts.get(publisher_key(winner), 0) + 1
