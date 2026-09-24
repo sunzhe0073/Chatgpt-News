@@ -9,10 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from generate_news import (
-    Item, deduplicate, postprocess_chinese, select_for_translation,
-    select_section, summary_source, translate_batch,
+    Item, deduplicate, postprocess_chinese, render, select_for_translation,
+    select_section, source_urls, summary_source, translate_batch,
 )
-from news_common import chinese_dominant, validate_html
+from news_common import BriefTextParser, canonical_source_url, chinese_dominant, validate_html
 
 
 class NewsGenerationTest(unittest.TestCase):
@@ -121,6 +121,87 @@ class NewsGenerationTest(unittest.TestCase):
         self.assertEqual(len(selected), 10)
         self.assertEqual(len(calls), 20)
 
+    def test_global_url_selection_keeps_priority_and_backfills_topic(self):
+        priority = self.make_item(
+            100,
+            category="ukraine",
+            title="Ukraine allies announce a distinct defence package",
+        )
+        priority.url = "https://news.example/story?at_medium=RSS&at_campaign=rss"
+        duplicate = self.make_item(
+            101,
+            category="ai",
+            title="Technology analysis of a separate headline angle",
+        )
+        duplicate.url = "https://news.example/story?utm_source=newsletter"
+        backfills = [self.make_item(i, category="ai") for i in range(10)]
+
+        selected = select_for_translation([priority, duplicate, *backfills])
+
+        self.assertIn(priority, selected)
+        self.assertNotIn(duplicate, selected)
+        self.assertEqual(len([item for item in selected if item.category == "ai"]), 10)
+        identities = [url for item in selected for url in source_urls(item)]
+        self.assertEqual(len(identities), len(set(identities)))
+
+    def test_tracking_parameters_share_one_article_identity(self):
+        first = self.make_item(1, title="Publisher reports one unique event today")
+        second = self.make_item(2, title="Different wording for that published report")
+        first.url = "https://www.bbc.co.uk/news/articles/example?at_medium=RSS&at_campaign=rss"
+        second.url = "https://www.bbc.co.uk/news/articles/example?utm_source=feed&utm_medium=rss"
+
+        self.assertEqual(canonical_source_url(first.url), canonical_source_url(second.url))
+        merged = deduplicate([first, second])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(merged[0].sources), 1)
+
+    def test_url_match_precedes_a_competing_title_similarity_group(self):
+        first = self.make_item(
+            19, title="Ukraine allies announce air defence support package today"
+        )
+        first.url = "https://example.com/first"
+        second = self.make_item(
+            18, title="Ukraine allies announce air defence support package again"
+        )
+        second.url = "https://example.com/shared?utm_source=rss"
+        third = self.make_item(
+            17, title="Publisher uses completely different words for this report"
+        )
+        third.url = "https://example.com/shared?at_medium=RSS"
+
+        merged = deduplicate([first, second, third])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(
+            {canonical_source_url(url) for _, url in merged[0].sources},
+            {canonical_source_url(first.url), canonical_source_url(second.url)},
+        )
+
+    def test_meaningful_query_parameters_keep_articles_distinct(self):
+        first = canonical_source_url("https://example.com/article?id=100&utm_source=rss")
+        second = canonical_source_url("https://example.com/article?id=200&utm_source=rss")
+        self.assertNotEqual(first, second)
+
+    def test_render_counts_final_cards_and_never_repeats_must_items(self):
+        items = [self.make_item(i, category="ai") for i in range(12)]
+        for i, item in enumerate(items):
+            item.title = f"中文新闻标题{i}"
+            item.summary = f"这是第{i}条新闻的中文摘要。"
+            item.sources = [(item.source, item.url)]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "rendered.html"
+            render(items, datetime(2026, 9, 24, 1, tzinfo=timezone.utc), output, [])
+            text = output.read_text(encoding="utf-8")
+            parser = BriefTextParser()
+            parser.feed(text)
+            card_count = sum(parser.section_counts.values())
+
+            self.assertEqual(card_count, len(items))
+            self.assertIn(f'<span class="pill">{card_count} 件独立事件</span>', text)
+            for item in items:
+                self.assertEqual(text.count(f'href="{item.url}"'), 1)
+            self.assertEqual(validate_html(output, "2026-09-24"), [])
+
     def test_chinese_postprocessing_is_conservative(self):
         raw = '“OpenAI发布AI模型, 价格为100美元。” “OpenAI发布AI模型, 价格为100美元。” - Reuters'
         cleaned = postprocess_chinese(raw)
@@ -176,7 +257,34 @@ class NewsGenerationTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/generate-daily-news.yml").read_text(encoding="utf-8")
         self.assertNotIn("models: read", workflow)
         self.assertNotIn("GITHUB_TOKEN:", workflow)
-        self.assertIn("scripts/setup_translation.py", workflow)
+        self.assertNotIn("scripts/setup_translation.py", workflow)
+        self.assertIn("google-github-actions/auth@v2", workflow)
+        self.assertIn("workload_identity_provider:", workflow)
+        self.assertIn("service_account:", workflow)
+
+    def test_validator_rejects_reused_source_url_and_incorrect_event_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "duplicates.html"
+            sections = []
+            for name in ("must", "ukraine", "middleeast", "migration", "ai", "robots", "energy", "other"):
+                cards = ""
+                if name in ("must", "ai"):
+                    cards = (
+                        f'<article class="card"><h3>{"重要事件" if name == "must" else "同一事件后续"}</h3>'
+                        '<p>这是经过翻译的中文摘要。</p><div class="src">'
+                        f'<a href="https://example.com/same-story?'
+                        f'{"utm_source=must" if name == "must" else "at_medium=RSS"}">Example</a>'
+                        '</div></article>'
+                    )
+                sections.append(f'<section id="{name}">{cards}</section>')
+            output.write_text(
+                '<title>私人 AI 新闻简报｜2026-09-24</title>ENGLISH SOURCES'
+                '<span class="pill">1 件独立事件</span>' + "".join(sections),
+                encoding="utf-8",
+            )
+            errors = validate_html(output, "2026-09-24")
+            self.assertTrue(any("reuses external source URLs" in error for error in errors))
+            self.assertIn("brief declares 1 independent events but contains 2 event cards", errors)
 
     def test_fixture_generation_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
