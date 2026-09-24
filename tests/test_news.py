@@ -258,7 +258,7 @@ class NewsGenerationTest(unittest.TestCase):
         self.assertNotIn("models: read", workflow)
         self.assertNotIn("GITHUB_TOKEN:", workflow)
         self.assertNotIn("scripts/setup_translation.py", workflow)
-        self.assertIn("google-github-actions/auth@v2", workflow)
+        self.assertIn("google-github-actions/auth@v3", workflow)
         self.assertIn("workload_identity_provider:", workflow)
         self.assertIn("service_account:", workflow)
 

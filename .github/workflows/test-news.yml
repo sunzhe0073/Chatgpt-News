@@ -1,0 +1,28 @@
+name: Test news brief
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile Python
+        run: python3 -m py_compile scripts/*.py
+      - name: Fixture end-to-end validation
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/news-brief.html"
+          python3 scripts/generate_news.py --date 2026-09-21 --fixture "$PWD/tests/fixtures/news.xml" --translation-fixture "$PWD/tests/fixtures/translations.json" --output "$output"
+          python3 scripts/validate_news.py "$output" --date 2026-09-21
