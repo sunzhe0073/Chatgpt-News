@@ -48,7 +48,7 @@ jobs:
         run: |
           day="$(TZ=Asia/Singapore date +%F)"
           file="私人AI新闻简报-${day}.html"
-          git add -- "$file"
+          git add -- "$file" .translation-usage.json
           if git diff --cached --quiet; then
             echo "Today's brief is already current."
             exit 0
