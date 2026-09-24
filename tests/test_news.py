@@ -176,7 +176,32 @@ class NewsGenerationTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/generate-daily-news.yml").read_text(encoding="utf-8")
         self.assertNotIn("models: read", workflow)
         self.assertNotIn("GITHUB_TOKEN:", workflow)
-        self.assertIn("scripts/setup_translation.py", workflow)
+        self.assertNotIn("scripts/setup_translation.py", workflow)
+        self.assertIn("google-github-actions/auth@v2", workflow)
+        self.assertIn("workload_identity_provider:", workflow)
+        self.assertIn("service_account:", workflow)
+
+    def test_validator_rejects_reused_source_url_and_incorrect_event_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "duplicates.html"
+            sections = []
+            for name in ("must", "ukraine", "middleeast", "migration", "ai", "robots", "energy", "other"):
+                cards = ""
+                if name in ("must", "ai"):
+                    cards = (
+                        f'<article class="card"><h3>{"重要事件" if name == "must" else "同一事件后续"}</h3>'
+                        '<p>这是经过翻译的中文摘要。</p><div class="src">'
+                        '<a href="https://example.com/same-story">Example</a></div></article>'
+                    )
+                sections.append(f'<section id="{name}">{cards}</section>')
+            output.write_text(
+                '<title>私人 AI 新闻简报｜2026-09-24</title>ENGLISH SOURCES'
+                '<span class="pill">1 件独立事件</span>' + "".join(sections),
+                encoding="utf-8",
+            )
+            errors = validate_html(output, "2026-09-24")
+            self.assertTrue(any("reuses external source URLs" in error for error in errors))
+            self.assertIn("brief declares 1 independent events but contains 2 event cards", errors)
 
     def test_fixture_generation_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:

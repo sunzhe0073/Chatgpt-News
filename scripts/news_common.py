@@ -32,7 +32,7 @@ class ChineseTextStats:
 
 
 # These are prose signals, not a whitelist of publishers or people.  Capitalised
-# names are handled structurally below, while ordinary English left by Argos is
+# names are handled structurally below, while ordinary untranslated English is
 # still counted even when an RSS headline uses title case.
 ENGLISH_PROSE_WORDS = {
     "a", "about", "after", "against", "all", "also", "an", "and", "are", "as", "at",
@@ -115,6 +115,12 @@ def validate_html(path: Path, expected_date: str) -> list[str]:
         errors.append("brief contains no external news links")
     if any(not link.startswith(("http://", "https://")) for link in links):
         errors.append("brief contains an invalid external link")
+    duplicate_links = sorted({link for link in links if links.count(link) > 1})
+    if duplicate_links:
+        errors.append(
+            "brief reuses external source URLs across event cards: "
+            + ", ".join(duplicate_links)
+        )
     titles = [re.sub(r"\s+", " ", x).strip().casefold() for x in re.findall(r"<h3>(.*?)</h3>", text)]
     if len(titles) != len(set(titles)):
         errors.append("brief contains duplicate event titles")
@@ -122,6 +128,12 @@ def validate_html(path: Path, expected_date: str) -> list[str]:
         errors.append("English-source marker is missing")
     parser = BriefTextParser()
     parser.feed(text)
+    card_count = sum(parser.section_counts.values())
+    declared = re.search(r'<span class="pill">(\d+) 件独立事件</span>', text)
+    if declared and int(declared.group(1)) != card_count:
+        errors.append(
+            f"brief declares {declared.group(1)} independent events but contains {card_count} event cards"
+        )
     for section_id, count in parser.section_counts.items():
         if count > MAX_SECTION_ITEMS:
             errors.append(f"section #{section_id} contains {count} events; maximum is {MAX_SECTION_ITEMS}")
