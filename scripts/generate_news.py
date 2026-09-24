@@ -162,7 +162,7 @@ def topic_eligible(item: Item, category: str) -> bool:
         return False
     if category == "ukraine":
         return any(x in text for x in ("ukrain", "kyiv", "zelensk")) and any(
-            x in text for x in ("russia", "war", "attack", "strike", "invasion", "military", "putin")
+            x in text for x in ("russia", "war", "attack", "strike", "invasion", "military", "defence", "defense", "putin")
         )
     if category == "middleeast":
         return any(x in text for x in ("gaza", "israel", "iran", "hamas", "hezbollah", "leban", "syria", "yemen", "houthi", "middle east", "west bank", "palestin"))
@@ -180,7 +180,7 @@ def topic_eligible(item: Item, category: str) -> bool:
         return technology and substantive
     if category == "other":
         return source_score(item.source, item.url) >= 3 and any(
-            re.search(rf"\\b{re.escape(term)}\\b", text) for term in MAJOR_TERMS
+            re.search(rf"\b{re.escape(term)}\b", text) for term in MAJOR_TERMS
         )
     return True
 
@@ -328,7 +328,7 @@ def protect_proper_nouns(value: str) -> tuple[str, dict[str, str]]:
 def restore_proper_nouns(value: str, mapping: dict[str, str]) -> str:
     for token, term in mapping.items():
         value = value.replace(token, term)
-    value = re.sub(r"\\bAnthrop(?:ologie|ico)\\b", "Anthropic", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bAnthrop(?:ologie|ico)\b", "Anthropic", value, flags=re.IGNORECASE)
     return value
 
 
