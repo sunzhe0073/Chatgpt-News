@@ -187,8 +187,11 @@ def topic_eligible(item: Item, category: str) -> bool:
 
 def source_score(source: str, url: str) -> int:
     text = f"{source} {url}".casefold()
-    score = 3 if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", ".gov", ".int")) else 0
-    return score
+    if any(x in text for x in BLOCKED_PUBLISHERS):
+        return 0
+    if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", "france24", ".gov", ".int")):
+        return 3
+    return 1
 
 
 def publisher_key(item: Item) -> str:
@@ -243,7 +246,7 @@ def select_section(
             return (value, item.published, item.title.casefold(), item.url)
 
         winner = max(remaining, key=score)
-        if category != "must" and ranking_score(winner, category, newest) < 6.0:
+        if category != "must" and ranking_score(winner, category, newest) < 10.0:
             break
         selected.append(winner)
         used_urls.update(source_urls(winner))
