@@ -179,7 +179,7 @@ def weak_syndication_item(item: Item) -> bool:
 
 def globally_significant(item: Item) -> bool:
     text = f" {item.title} {item.summary} ".casefold()
-    if any(term in text for term in GLOBAL_SIGNIFICANCE_TERMS):
+    if any(re.search(rf"\b{re.escape(term)}\b", text) for term in GLOBAL_SIGNIFICANCE_TERMS):
         return True
     return item.category in ("ukraine", "middleeast") and any(
         term in text for term in ("war", "attack", "strike", "ceasefire", "sanction", "nuclear", "united nations")
