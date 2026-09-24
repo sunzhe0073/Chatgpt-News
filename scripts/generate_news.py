@@ -90,6 +90,8 @@ class Item:
     summary: str = ""
     category: str = "other"
     sources: list[tuple[str, str]] = field(default_factory=list)
+    original_title: str = ""
+    original_summary: str = ""
 
 
 def clean(value: str) -> str:
@@ -155,10 +157,23 @@ def canonical_words(title: str) -> set[str]:
 
 
 def category_for(item: Item, hinted: str) -> str:
-    text = f" {item.title} {item.summary} ".casefold()
-    scores = {key: sum(term in text for term in terms) for key, terms in TOPIC_TERMS.items()}
+    # The headline is the strongest signal of a story's core subject. Summary
+    # matches can support it, but must not let a broad live blog jump sections.
+    title = f" {item.title} ".casefold()
+    summary = f" {item.summary} ".casefold()
+    scores = {
+        key: sum(term in title for term in terms) * 3 + sum(term in summary for term in terms)
+        for key, terms in TOPIC_TERMS.items()
+    }
     best = max(scores, key=scores.get)
-    return best if scores[best] else hinted
+    if scores[best] == 0:
+        return hinted
+    # For sensitive geopolitical sections, require at least one headline signal
+    # unless the feed/search itself was explicitly scoped to that topic.
+    if best in ("ukraine", "middleeast", "migration") and hinted != best:
+        if not any(term in title for term in TOPIC_TERMS[best]):
+            return hinted
+    return best
 
 
 def low_quality_item(item: Item) -> bool:
@@ -178,7 +193,11 @@ def weak_syndication_item(item: Item) -> bool:
 
 
 def globally_significant(item: Item) -> bool:
-    text = f" {item.title} {item.summary} ".casefold()
+    # Rendering happens after translation, so preserve and evaluate the English
+    # source text rather than trying to match English significance terms in Chinese.
+    title = item.original_title or item.title
+    summary = item.original_summary or item.summary
+    text = f" {title} {summary} ".casefold()
     if any(re.search(rf"\b{re.escape(term)}\b", text) for term in GLOBAL_SIGNIFICANCE_TERMS):
         return True
     return item.category in ("ukraine", "middleeast") and any(
@@ -232,6 +251,10 @@ def selection_eligible(item: Item, category: str) -> bool:
     if not topic_eligible(item, category):
         return False
     if category in ("ukraine", "middleeast", "migration", "other"):
+        return not weak_syndication_item(item)
+    if category == "energy":
+        # Energy already has a strict technology/substance gate above; do not
+        # require a second popularity-style score that can erase a quiet news day.
         return not weak_syndication_item(item)
     text = f" {item.title} {item.summary} ".casefold()
     relevance = sum(term in text for term in TOPIC_TERMS.get(category, ()))
@@ -472,6 +495,8 @@ def translate_batch(items: list[Item], fixture: Path | None = None, translator=N
     warnings: list[str] = []
     for item in items:
         original_title = item.title
+        item.original_title = item.original_title or item.title
+        item.original_summary = item.original_summary or item.summary
         if fixture_data is not None:
             value = fixture_data.get(item.title)
             if not value:
