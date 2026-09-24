@@ -66,7 +66,7 @@ GLOBAL_SIGNIFICANCE_TERMS = (
     "war", "ceasefire", "sanction", "invasion", "military", "nuclear",
     "united nations", "security council", "international", "treaty",
     "summit", "diplomatic", "earthquake", "tsunami", "hurricane",
-    "famine", "mass shooting", "election", "coup", "emergency",
+    "famine", "election", "coup", "emergency",
 )
 IMPORTANT_LIMIT = 7
 PROPER_NOUNS = (
