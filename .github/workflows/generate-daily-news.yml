@@ -26,27 +26,44 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      - name: Decide whether recovery run is needed
+        id: gate
+        shell: bash
+        run: |
+          day="$(TZ=Asia/Singapore date +%F)"
+          if [[ "${{ github.event.schedule }}" == "5 2 * * *" && -f "私人AI新闻简报-${day}.html" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Today's brief already exists; recovery run is not needed."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Authenticate to Google Cloud
+        if: steps.gate.outputs.run == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/256977843894/locations/global/workloadIdentityPools/chatgpt-news-github/providers/github-actions
           service_account: chatgpt-news-translation@project-d7893afe-ec91-47bb-86d.iam.gserviceaccount.com
       - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install translation runtime
+        if: steps.gate.outputs.run == 'true'
         run: python3 -m pip install --requirement requirements-translation.txt
       - name: Generate today's brief from English sources
+        if: steps.gate.outputs.run == 'true'
         env:
           GOOGLE_CLOUD_PROJECT: project-d7893afe-ec91-47bb-86d
         run: python3 scripts/generate_news.py
       - name: Validate generated brief
+        if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           day="$(TZ=Asia/Singapore date +%F)"
           python3 scripts/validate_news.py "私人AI新闻简报-${day}.html" --date "$day"
       - name: Commit and push a new brief
+        if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           day="$(TZ=Asia/Singapore date +%F)"
