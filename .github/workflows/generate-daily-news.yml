@@ -2,8 +2,8 @@ name: Generate daily news brief
 
 on:
   schedule:
-    # GitHub cron uses UTC. 01:05 UTC is 09:05 in Singapore (UTC+8).
-    - cron: "5 1 * * *"
+    # GitHub cron uses UTC. 00:40 UTC is 08:40 in Singapore (UTC+8).
+    - cron: "40 0 * * *"
   workflow_dispatch:
 
 permissions:
