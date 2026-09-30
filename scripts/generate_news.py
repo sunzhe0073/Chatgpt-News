@@ -31,6 +31,7 @@ QUERIES = {
     "ai": "artificial intelligence AI model regulation data center chips",
     "robots": "humanoid robot robotics autonomous system",
     "energy": "energy technology battery nuclear fusion renewable grid",
+    "southeastasia": "Southeast Asia ASEAN Singapore Malaysia Indonesia Thailand Vietnam Philippines Myanmar Cambodia Laos Brunei Timor-Leste",
     "other": "major international world news",
 }
 DIRECT_FEEDS = {
@@ -48,6 +49,7 @@ TOPIC_TERMS = {
     "ai": ("artificial intelligence", " ai ", "openai", "anthropic", "deepmind", "nvidia", "chatgpt", "model", "data center"),
     "robots": ("robot", "humanoid", "autonomous", "automation"),
     "energy": ("energy", "battery", "nuclear", "fusion", "solar", "wind power", "grid", "hydrogen", "geothermal"),
+    "southeastasia": ("southeast asia", "asean", "singapore", "malaysia", "indonesia", "thailand", "vietnam", "philippines", "myanmar", "cambodia", "laos", "brunei", "timor-leste", "timor leste"),
 }
 LOW_QUALITY = (
     "opinion", "horoscope", "quiz", "podcast", "live updates", "sponsored",
@@ -159,6 +161,10 @@ def canonical_words(title: str) -> set[str]:
 
 
 def category_for(item: Item, hinted: str) -> str:
+    # A dedicated Southeast Asia search is intentionally kept in its regional
+    # section even when the same story also matches AI, energy or another topic.
+    if hinted == "southeastasia":
+        return hinted
     # The headline is the strongest signal of a story's core subject. Summary
     # matches can support it, but must not let a broad live blog jump sections.
     title = f" {item.title} ".casefold()
@@ -226,6 +232,8 @@ def topic_eligible(item: Item, category: str) -> bool:
         robot = any(x in text for x in ("robot", "robotics", "humanoid", "embodied ai"))
         substantive = any(x in text for x in ("humanoid", "embodied ai", "autonomous", "industrial", "service robot", "deployment", "factory", "warehouse", "teleoperation", "locomotion", "manipulation", "unitree", "figure ai", "boston dynamics"))
         return robot and substantive
+    if category == "southeastasia":
+        return any(x in text for x in TOPIC_TERMS["southeastasia"])
     if category == "energy":
         technology = any(x in text for x in ("battery", "nuclear", "fusion", "small modular reactor", " smr ", "grid", "energy storage", "solar", "wind power", "geothermal", "hydrogen", "renewable energy"))
         substantive = any(x in text for x in ("technology", "reactor", "storage", "capacity", "plant", "project", "deployment", "breakthrough", "commercial", "grid", "battery", "fusion", "solar", "wind", "geothermal", "hydrogen"))
@@ -243,7 +251,7 @@ def source_score(source: str, url: str) -> int:
     text = f"{source} {url}".casefold()
     if any(x in text for x in BLOCKED_PUBLISHERS):
         return 0
-    if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", "france24", ".gov", ".int")):
+    if any(x in text for x in ("reuters", "bbc", "ap news", "apnews", "associated press", "guardian", "npr", "un news", "news.un.org", "france24", "channel newsasia", "cna", "straits times", "bangkok post", "the star", "bernama", "vietnam news", "philippine news agency", "jakarta post", ".gov", ".int")):
         return 3
     return 1
 
