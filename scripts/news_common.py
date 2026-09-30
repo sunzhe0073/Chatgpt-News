@@ -17,6 +17,7 @@ SECTIONS = (
     ("ai", "AI：模型、算力、安全与监管"),
     ("robots", "人形机器人与自主系统"),
     ("energy", "能源科技、电池与先进核能"),
+    ("southeastasia", "东南亚"),
     ("other", "其他重大国际与科技新闻"),
 )
 MAX_SECTION_ITEMS = 10
